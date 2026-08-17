@@ -1,0 +1,572 @@
+import {
+  Action,
+  ActionPanel,
+  Clipboard,
+  Detail,
+  Icon,
+  Keyboard,
+  List,
+  closeMainWindow,
+  getPreferenceValues,
+  open,
+  showToast,
+  Toast,
+  type Image,
+} from "@raycast/api";
+import { useCachedPromise, usePromise } from "@raycast/utils";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { getAdapters, getAvailableAdapters, resolveManagerId } from "./registry";
+import type { ItemAvailability, PasswordManagerAdapter, VaultItem } from "./types";
+
+const TOTP_DELAY_MS = 5000;
+
+const SHORTCUTS = {
+  pastePassword: { modifiers: ["cmd", "shift"], key: "return" as const },
+  copyEmail: { modifiers: ["cmd"], key: "c" as const },
+  copyPassword: { modifiers: ["cmd", "shift"], key: "c" as const },
+  copyTotp: { modifiers: ["cmd"], key: "t" as const },
+};
+
+interface CredentialActionOptions {
+  scheduleTotp?: boolean;
+  autoCopyTotpAfterPassword?: boolean;
+  adapter?: PasswordManagerAdapter;
+  item?: VaultItem;
+}
+
+function defaultAvailability(item: VaultItem): ItemAvailability {
+  return {
+    hasUrl: Boolean(item.url),
+    url: item.url,
+    hasEmail: Boolean(item.email),
+    hasUsername: Boolean(item.username),
+    hasTotp: item.hasTotp === true,
+    hasPassword: true,
+  };
+}
+
+async function resolveItemAvailability(adapter: PasswordManagerAdapter, item: VaultItem): Promise<ItemAvailability> {
+  if (adapter.getItemAvailability) {
+    return adapter.getItemAvailability(item);
+  }
+
+  const [url, email, username, totpResult] = await Promise.all([
+    adapter.getUrl?.(item),
+    adapter.getEmail(item).catch(() => undefined),
+    adapter.getUsername(item).catch(() => undefined),
+    adapter.getTotp(item).catch(() => undefined),
+  ]);
+
+  let hasPassword = true;
+  try {
+    const password = await adapter.getPassword(item);
+    hasPassword = Boolean(password);
+  } catch {
+    hasPassword = false;
+  }
+
+  return {
+    hasUrl: Boolean(url),
+    url,
+    hasEmail: Boolean(email),
+    hasUsername: Boolean(username),
+    hasTotp: Boolean(totpResult),
+    hasPassword,
+  };
+}
+
+function ItemAction({
+  title,
+  icon,
+  shortcut,
+  onAction,
+}: {
+  title: string;
+  icon: Image.ImageLike;
+  shortcut?: Keyboard.Shortcut;
+  onAction: () => Promise<void>;
+}) {
+  return <Action title={title} icon={icon} shortcut={shortcut} onAction={onAction} />;
+}
+
+async function showActionError(title: string, message?: string): Promise<void> {
+  await showToast({ style: Toast.Style.Failure, title, message });
+}
+
+function actionErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function shouldScheduleTotpCopy(options?: CredentialActionOptions): Promise<boolean> {
+  if (!options?.scheduleTotp || !options.autoCopyTotpAfterPassword || !options.adapter || !options.item) {
+    return false;
+  }
+
+  try {
+    const totp = await options.adapter.getTotp(options.item);
+    return Boolean(totp?.trim());
+  } catch {
+    return false;
+  }
+}
+
+async function scheduleTotpCopy(adapter: PasswordManagerAdapter, item: VaultItem): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, TOTP_DELAY_MS));
+
+  try {
+    const totp = await adapter.getTotp(item);
+    if (!totp) {
+      return;
+    }
+
+    await Clipboard.copy(totp);
+    await showToast({ style: Toast.Style.Success, title: "TOTP copied" });
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Failed to copy TOTP",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function closeThenToast(
+  toast: { style: Toast.Style; title: string; message?: string },
+  shouldClose: boolean,
+): Promise<void> {
+  if (shouldClose) {
+    await closeMainWindow();
+  }
+
+  await showToast(toast);
+}
+
+async function copyCredential(
+  label: string,
+  value: string,
+  closeAfterCopy: boolean,
+  options?: CredentialActionOptions,
+): Promise<void> {
+  await Clipboard.copy(value);
+
+  const scheduleTotp = await shouldScheduleTotpCopy(options);
+
+  await closeThenToast(
+    {
+      style: Toast.Style.Success,
+      title: `${label} copied`,
+      message: scheduleTotp ? "TOTP in 5 seconds" : undefined,
+    },
+    closeAfterCopy,
+  );
+
+  if (scheduleTotp && options?.adapter && options.item) {
+    void scheduleTotpCopy(options.adapter, options.item);
+  }
+}
+
+async function pasteCredential(label: string, value: string, options?: CredentialActionOptions): Promise<void> {
+  await Clipboard.paste(value);
+
+  const scheduleTotp = await shouldScheduleTotpCopy(options);
+
+  await closeThenToast(
+    {
+      style: Toast.Style.Success,
+      title: `${label} pasted`,
+      message: scheduleTotp ? "TOTP in 5 seconds" : undefined,
+    },
+    true,
+  );
+
+  if (scheduleTotp && options?.adapter && options.item) {
+    void scheduleTotpCopy(options.adapter, options.item);
+  }
+}
+
+function ItemActions({
+  item,
+  adapter,
+  closeAfterCopy,
+  autoCopyTotpAfterPassword,
+}: {
+  item: VaultItem;
+  adapter: PasswordManagerAdapter;
+  closeAfterCopy: boolean;
+  autoCopyTotpAfterPassword: boolean;
+}) {
+  const { data: availabilityData } = useCachedPromise(
+    (vaultItem: VaultItem, pwdAdapter: PasswordManagerAdapter) => resolveItemAvailability(pwdAdapter, vaultItem),
+    [item, adapter],
+    {
+      initialData: defaultAvailability(item),
+    },
+  );
+
+  const availability = availabilityData ?? defaultAvailability(item);
+
+  const passwordTotpOptions: CredentialActionOptions = {
+    scheduleTotp: true,
+    autoCopyTotpAfterPassword,
+    adapter,
+    item,
+  };
+
+  return (
+    <ActionPanel>
+      <ItemAction
+        title="Open in Browser"
+        icon={Icon.Globe}
+        onAction={async () => {
+          if (!adapter.getUrl) {
+            await showActionError("Not supported");
+            return;
+          }
+
+          if (!availability.hasUrl) {
+            await showActionError("No URL available");
+            return;
+          }
+
+          try {
+            const url = availability.url ?? (await adapter.getUrl(item));
+            if (!url) {
+              await showActionError("No URL available");
+              return;
+            }
+
+            await open(url);
+            await closeMainWindow();
+          } catch (error) {
+            await showActionError("Failed to open in browser", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Paste Email"
+        icon={Icon.Envelope}
+        onAction={async () => {
+          if (!availability.hasEmail) {
+            await showActionError("No email available");
+            return;
+          }
+
+          try {
+            const email = await adapter.getEmail(item);
+            if (!email) {
+              await showActionError("No email available");
+              return;
+            }
+
+            await pasteCredential("Email", email);
+          } catch (error) {
+            await showActionError("Failed to paste email", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Paste Password"
+        icon={Icon.Key}
+        shortcut={SHORTCUTS.pastePassword}
+        onAction={async () => {
+          if (!availability.hasPassword) {
+            await showActionError("No password available");
+            return;
+          }
+
+          try {
+            const password = await adapter.getPassword(item);
+            if (!password) {
+              await showActionError("No password available");
+              return;
+            }
+
+            await pasteCredential("Password", password, passwordTotpOptions);
+          } catch (error) {
+            await showActionError("Failed to paste password", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Copy Email"
+        icon={Icon.Envelope}
+        shortcut={SHORTCUTS.copyEmail}
+        onAction={async () => {
+          if (!availability.hasEmail) {
+            await showActionError("No email available");
+            return;
+          }
+
+          try {
+            const email = await adapter.getEmail(item);
+            if (!email) {
+              await showActionError("No email available");
+              return;
+            }
+
+            await copyCredential("Email", email, closeAfterCopy);
+          } catch (error) {
+            await showActionError("Failed to copy email", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Copy Password"
+        icon={Icon.Key}
+        shortcut={SHORTCUTS.copyPassword}
+        onAction={async () => {
+          if (!availability.hasPassword) {
+            await showActionError("No password available");
+            return;
+          }
+
+          try {
+            const password = await adapter.getPassword(item);
+            if (!password) {
+              await showActionError("No password available");
+              return;
+            }
+
+            await copyCredential("Password", password, closeAfterCopy, passwordTotpOptions);
+          } catch (error) {
+            await showActionError("Failed to copy password", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Copy TOTP"
+        icon={Icon.Clock}
+        shortcut={SHORTCUTS.copyTotp}
+        onAction={async () => {
+          if (!availability.hasTotp) {
+            await showActionError("No TOTP available");
+            return;
+          }
+
+          try {
+            const totp = await adapter.getTotp(item);
+            if (!totp) {
+              await showActionError("No TOTP available");
+              return;
+            }
+
+            await copyCredential("TOTP", totp, closeAfterCopy);
+          } catch (error) {
+            await showActionError("Failed to copy TOTP", actionErrorMessage(error));
+          }
+        }}
+      />
+      <ItemAction
+        title="Copy Username"
+        icon={Icon.Person}
+        onAction={async () => {
+          if (!availability.hasUsername) {
+            await showActionError("No username available");
+            return;
+          }
+
+          try {
+            const username = await adapter.getUsername(item);
+            if (!username) {
+              await showActionError("No username available");
+              return;
+            }
+
+            await copyCredential("Username", username, closeAfterCopy);
+          } catch (error) {
+            await showActionError("Failed to copy username", actionErrorMessage(error));
+          }
+        }}
+      />
+      {adapter.openInManager && (
+        <ItemAction
+          title="Open in Password Manager"
+          icon={Icon.AppWindow}
+          onAction={async () => {
+            try {
+              await adapter.openInManager!(item);
+              await closeMainWindow();
+            } catch (error) {
+              await showActionError("Failed to open in password manager", actionErrorMessage(error));
+            }
+          }}
+        />
+      )}
+    </ActionPanel>
+  );
+}
+
+export default function SearchPasswords() {
+  const preferences = getPreferenceValues<Preferences>();
+  const closeAfterCopy = preferences.closeAfterCopy ?? true;
+  const autoCopyTotpAfterPassword = preferences.autoCopyTotpAfterPassword ?? false;
+
+  const { data: adapterStatuses, isLoading: isLoadingAdapters } = usePromise(getAvailableAdapters);
+
+  const allAdapters = useMemo(() => getAdapters(), []);
+
+  const availableAdapters = useMemo(
+    () => adapterStatuses?.filter((entry) => entry.status.ok).map((entry) => entry.adapter) ?? [],
+    [adapterStatuses],
+  );
+
+  const unavailableAdapters = useMemo(
+    () => adapterStatuses?.filter((entry) => !entry.status.ok) ?? [],
+    [adapterStatuses],
+  );
+
+  const preferredManagerId = useMemo(
+    () => resolveManagerId(preferences.defaultManagerId, availableAdapters, allAdapters),
+    [allAdapters, availableAdapters, preferences.defaultManagerId],
+  );
+
+  const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
+  const dropdownChangeCountRef = useRef(0);
+
+  useEffect(() => {
+    dropdownChangeCountRef.current = 0;
+    setSessionManagerId(undefined);
+  }, [preferences.defaultManagerId, preferredManagerId]);
+
+  const activeManagerId = sessionManagerId ?? preferredManagerId;
+  const selectedAdapter = availableAdapters.find((adapter) => adapter.id === activeManagerId);
+  const [searchText, setSearchText] = useState("");
+
+  const {
+    data: items,
+    isLoading: isLoadingItems,
+    error: searchError,
+  } = useCachedPromise(
+    async (managerId: string, query: string) => {
+      const adapter = getAdapters().find((entry) => entry.id === managerId);
+      if (!adapter) {
+        return [];
+      }
+
+      return adapter.searchItems(query);
+    },
+    [activeManagerId ?? "", searchText],
+    {
+      execute: Boolean(activeManagerId),
+      keepPreviousData: false,
+    },
+  );
+
+  if (isLoadingAdapters) {
+    return <List searchBarPlaceholder="Loading password managers..." />;
+  }
+
+  if (availableAdapters.length === 0) {
+    const setupMarkdown = [
+      "# No password manager available",
+      "",
+      "Register adapters in `src/adapters/index.ts` and ensure their CLI is installed.",
+      "",
+      "## Registered adapters",
+      "",
+      ...allAdapters.map((adapter) => {
+        const status = adapterStatuses?.find((entry) => entry.adapter.id === adapter.id)?.status;
+        const reason = status && !status.ok ? status.reason : "Unknown";
+        return `- **${adapter.name}** (${adapter.id}): ${reason}`;
+      }),
+      "",
+      "## CLI path overrides",
+      "",
+      'Set extension preference `CLI Path Overrides (JSON)` e.g. `{"1password": "/opt/homebrew/bin/op"}`',
+    ].join("\n");
+
+    return <Detail markdown={setupMarkdown} />;
+  }
+
+  if (!preferredManagerId) {
+    return <List isLoading />;
+  }
+
+  const unavailableSelection = unavailableAdapters.find(({ adapter }) => adapter.id === activeManagerId);
+
+  return (
+    <List
+      navigationTitle={selectedAdapter?.name ?? "Password Managers"}
+      searchText={searchText}
+      onSearchTextChange={setSearchText}
+      searchBarPlaceholder="Search passwords..."
+      throttle
+      isLoading={isLoadingItems}
+      searchBarAccessory={
+        <List.Dropdown
+          key={`manager-${preferences.defaultManagerId}-${preferredManagerId}`}
+          id="pwm-manager"
+          tooltip="Password Manager"
+          storeValue={false}
+          value={activeManagerId}
+          onChange={(managerId) => {
+            dropdownChangeCountRef.current += 1;
+
+            if (dropdownChangeCountRef.current === 1 && managerId !== preferredManagerId) {
+              return;
+            }
+
+            setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
+          }}
+        >
+          <List.Dropdown.Section title="Available">
+            {availableAdapters.map((adapter) => (
+              <List.Dropdown.Item key={adapter.id} title={adapter.name} value={adapter.id} />
+            ))}
+          </List.Dropdown.Section>
+          {unavailableAdapters.length > 0 && (
+            <List.Dropdown.Section title="Unavailable">
+              {unavailableAdapters.map(({ adapter, status }) => (
+                <List.Dropdown.Item
+                  key={adapter.id}
+                  title={adapter.name}
+                  value={adapter.id}
+                  icon={Icon.ExclamationMark}
+                  subtitle={status.ok ? undefined : status.reason}
+                />
+              ))}
+            </List.Dropdown.Section>
+          )}
+        </List.Dropdown>
+      }
+    >
+      {searchError && (
+        <List.EmptyView icon={Icon.ExclamationMark} title="Search failed" description={searchError.message} />
+      )}
+      {!searchError && !selectedAdapter && unavailableSelection && (
+        <List.EmptyView
+          icon={Icon.ExclamationMark}
+          title="Password manager unavailable"
+          description={unavailableSelection.status.ok ? undefined : unavailableSelection.status.reason}
+        />
+      )}
+      {!searchError && selectedAdapter && items?.length === 0 && (
+        <List.EmptyView icon={Icon.MagnifyingGlass} title="No items found" description="Try a different search term" />
+      )}
+      {items?.map((item) => (
+        <List.Item
+          key={item.id}
+          title={item.title}
+          subtitle={item.subtitle}
+          keywords={[item.username, item.email].filter((value): value is string => Boolean(value))}
+          accessories={[
+            ...(item.email ? [{ text: item.email, icon: Icon.Envelope }] : []),
+            ...(item.username ? [{ text: item.username, icon: Icon.Person }] : []),
+          ]}
+          icon={Icon.Key}
+          actions={
+            selectedAdapter ? (
+              <ItemActions
+                item={item}
+                adapter={selectedAdapter}
+                closeAfterCopy={closeAfterCopy}
+                autoCopyTotpAfterPassword={autoCopyTotpAfterPassword}
+              />
+            ) : undefined
+          }
+        />
+      ))}
+    </List>
+  );
+}

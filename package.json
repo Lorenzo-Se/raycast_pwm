@@ -1,0 +1,94 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "raycast-pwm",
+  "title": "Password Managers",
+  "description": "Access password managers via CLI adapters",
+  "icon": "icon.png",
+  "author": "seml",
+  "categories": [
+    "Security"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "search-passwords",
+      "title": "Search Passwords",
+      "subtitle": "Password Managers",
+      "icon": "icon.png",
+      "description": "Search and copy credentials from configured password manager CLIs",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "defaultManagerId",
+      "type": "dropdown",
+      "required": false,
+      "title": "Default Manager",
+      "description": "Password manager to use by default. Choose \"Auto\" to use the first available adapter.",
+      "default": "auto",
+      "data": [
+        {
+          "title": "Auto (first available)",
+          "value": "auto"
+        },
+        {
+          "title": "Template (Mock)",
+          "value": "template"
+        },
+        {
+          "title": "Proton Pass",
+          "value": "protonpass"
+        }
+      ]
+    },
+    {
+      "name": "cliPathOverrides",
+      "type": "textfield",
+      "required": false,
+      "title": "CLI Path Overrides (JSON)",
+      "description": "Optional JSON map of adapter ID to CLI binary path, e.g. {\"1password\": \"/opt/homebrew/bin/op\"}",
+      "placeholder": "{\"1password\": \"/opt/homebrew/bin/op\"}"
+    },
+    {
+      "name": "closeAfterCopy",
+      "type": "checkbox",
+      "required": false,
+      "default": true,
+      "label": "Close window after copying",
+      "description": "Close Raycast after copying a credential to the clipboard."
+    },
+    {
+      "name": "autoCopyTotpAfterPassword",
+      "type": "checkbox",
+      "required": false,
+      "default": false,
+      "label": "Auto-copy TOTP after password action",
+      "description": "After copying or pasting a password, automatically copy the TOTP code after 5 seconds."
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.103.6",
+    "@raycast/utils": "^2.2.2"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.1.1",
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "sync-preferences": "node scripts/sync-preferences.mjs",
+    "build": "npm run sync-preferences && ray build -e dev -o \"$HOME/.config/raycast/extensions/raycast-pwm\"",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
+    "publish": "npx @raycast/api@latest publish"
+  },
+  "platforms": [
+    "macOS"
+  ]
+}
