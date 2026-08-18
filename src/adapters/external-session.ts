@@ -25,6 +25,7 @@ interface PendingRequest {
 
 const sessions = new Map<string, ExternalAdapterSession>();
 let scheduledDispose: ReturnType<typeof setTimeout> | undefined;
+let biometricUnlockInProgress = false;
 
 export function parseSessionTimeoutMinutes(raw: string | undefined): number {
   const parsed = Number.parseInt(raw ?? String(DEFAULT_SESSION_TIMEOUT_MINUTES), 10);
@@ -71,6 +72,17 @@ export async function disposeAllSessions(): Promise<void> {
   await Promise.all(active.map((session) => session.dispose()));
 }
 
+export function setBiometricUnlockInProgress(value: boolean): void {
+  biometricUnlockInProgress = value;
+  if (value) {
+    cancelScheduledDispose();
+  }
+}
+
+export function isBiometricUnlockInProgress(): boolean {
+  return biometricUnlockInProgress;
+}
+
 export function cancelScheduledDispose(): void {
   if (scheduledDispose) {
     clearTimeout(scheduledDispose);
@@ -79,9 +91,17 @@ export function cancelScheduledDispose(): void {
 }
 
 export function scheduleDisposeAllSessions(delayMs: number): void {
+  if (biometricUnlockInProgress) {
+    return;
+  }
+
   cancelScheduledDispose();
   scheduledDispose = setTimeout(() => {
     scheduledDispose = undefined;
+    if (biometricUnlockInProgress) {
+      return;
+    }
+
     void disposeAllSessions();
   }, delayMs);
 }

@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelScheduledDispose,
   disposeSession,
+  isBiometricUnlockInProgress,
   parseSessionTimeoutMinutes,
   scheduleDisposeAllSessions,
 } from "./adapters/external-session";
@@ -258,12 +259,14 @@ function ItemActions({
   closeAfterCopy,
   autoCopyTotpAfterPassword,
   onActivity,
+  onLock,
 }: {
   item: VaultItem;
   adapter: PasswordManagerAdapter;
   closeAfterCopy: boolean;
   autoCopyTotpAfterPassword: boolean;
   onActivity: () => void;
+  onLock: () => void;
 }) {
   const { data: availabilityData } = useCachedPromise(
     (vaultItem: VaultItem, pwdAdapter: PasswordManagerAdapter) => resolveItemAvailability(pwdAdapter, vaultItem),
@@ -471,6 +474,7 @@ function ItemActions({
           }}
         />
       )}
+      <ItemAction title="Lock Session" icon={Icon.Lock} onActivity={onActivity} onAction={async () => onLock()} />
     </ActionPanel>
   );
 }
@@ -512,6 +516,7 @@ export default function SearchPasswords() {
 
   const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
   const [unlockedIds, setUnlockedIds] = useState<string[]>([]);
+  const [hasUnlockedThisMount, setHasUnlockedThisMount] = useState(false);
   const [searchText, setSearchText] = useState("");
   const dropdownChangeCountRef = useRef(0);
   const lastActivityRef = useRef(Date.now());
@@ -531,6 +536,10 @@ export default function SearchPasswords() {
   useEffect(() => {
     cancelScheduledDispose();
     return () => {
+      if (isBiometricUnlockInProgress()) {
+        return;
+      }
+
       scheduleDisposeAllSessions(SESSION_DISPOSE_REMOUNT_GRACE_MS + pendingSessionDisposeDelayMs());
     };
   }, []);
@@ -650,6 +659,16 @@ export default function SearchPasswords() {
     setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
   }
 
+  async function lockActiveSession(): Promise<void> {
+    if (!activeManagerId) {
+      return;
+    }
+
+    markActivity();
+    await disposeSession(activeManagerId);
+    setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
+  }
+
   function handleListManagerChange(managerId: string): void {
     dropdownChangeCountRef.current += 1;
 
@@ -703,9 +722,11 @@ export default function SearchPasswords() {
         adapterStatuses={adapterStatuses ?? []}
         activeManagerId={activeManagerId}
         preferredManagerId={preferredManagerId}
+        isReauth={hasUnlockedThisMount}
         onManagerChange={applyManagerSelection}
         onUnlocked={() => {
           markActivity();
+          setHasUnlockedThisMount(true);
           setUnlockedIds((ids) => (ids.includes(selectedAdapter.id) ? ids : [...ids, selectedAdapter.id]));
         }}
         onActivity={markActivity}
@@ -728,6 +749,7 @@ export default function SearchPasswords() {
         selectedAdapter ? (
           <ActionPanel>
             <Action title="Reload Items" icon={Icon.ArrowClockwise} onAction={reloadItems} />
+            <Action title="Lock Session" icon={Icon.Lock} onAction={lockActiveSession} />
           </ActionPanel>
         ) : undefined
       }
@@ -801,6 +823,9 @@ export default function SearchPasswords() {
                 closeAfterCopy={closeAfterCopy}
                 autoCopyTotpAfterPassword={autoCopyTotpAfterPassword}
                 onActivity={markActivity}
+                onLock={() => {
+                  void lockActiveSession();
+                }}
               />
             ) : undefined
           }

@@ -10,6 +10,7 @@ Raycast-Extension mit generalisiertem CLI-Adapter-System für Password Manager. 
 - Multi-Manager-Umschalter in der Suche
 - PIN-Entsperrung für Proton Pass (6-stellige Session-PIN)
 - Externe Third-Party-Adapter über konfigurierbaren Ordner
+- Touch ID / Apple Watch / Gerätecode für erneutes Entsperren nach Timeout (macOS, lokal/dev)
 
 ## Entwicklung
 
@@ -19,6 +20,10 @@ npm run dev
 ```
 
 Öffne Raycast → **Developer** → den laufenden Dev-Mode-Extension nutzen → **Search Passwords**.
+
+Touch ID kompiliert ein kleines Swift-CLI (`swift/BiometricAuth/main.swift`) mit **swiftc** aus den Command Line Tools — die volle Xcode-App ist nicht nötig. `npm run dev` / `npm run build` rufen `npm run build-biometric` zuerst auf.
+
+Der Raycast Store lehnt Keychain-Zugriff ab — Touch-ID-Re-Auth ist für lokale/Dev-Builds gedacht, nicht für Store-Submission.
 
 ### Extension-Einstellungen
 
@@ -30,6 +35,9 @@ npm run dev
 | CLI Path Overrides (JSON)            | macOS: `{"1password": "/opt/homebrew/bin/op"}` · Windows: `{"protonpass": "%LOCALAPPDATA%\\Programs\\pass-cli\\pass-cli.exe"}` |
 | Close window after copying           | Raycast nach Copy schließen                                                                                                    |
 | Auto-copy TOTP after password action | TOTP nach 5 Sekunden automatisch kopieren                                                                                      |
+| Session timeout (minutes)            | Idle-Lock nach 1–1440 Minuten (Default 15)                                                                                     |
+| Enable Touch ID for re-unlock        | macOS: Credentials verschlüsselt in der Keychain für biometrisches Re-Unlock auf diesem Gerät (Default aus)                    |
+| Touch ID only after timeout          | macOS: Touch ID nicht beim ersten Unlock nach Öffnen, nur nach Timeout oder Lock (Default an)                                  |
 
 ## Built-in Password Manager hinzufügen
 
@@ -63,6 +71,7 @@ Referenz-Adapter: [examples/external-adapter/protonpass](examples/external-adapt
 ```
 src/
 ├── search-passwords.tsx   # Haupt-Command (UI)
+├── unlock-form.tsx        # Master-PW/PIN + Touch ID
 ├── types.ts               # Adapter-Interface
 ├── registry.ts            # Adapter-Registry
 ├── registry/
@@ -74,9 +83,11 @@ src/
 │   ├── protonpass.ts
 │   └── README.md
 └── utils/
+    ├── biometric-auth.ts
     ├── cli.ts
     └── paths.ts
 
+swift/BiometricAuth/                   # Touch ID + Keychain CLI (macOS, swiftc)
 examples/external-adapter/protonpass/  # Proton Pass CLI (extern)
 examples/external-adapter/threepass/   # ThreePass (extern, persistent + Master-PW)
 ```

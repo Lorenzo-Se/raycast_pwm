@@ -92,6 +92,22 @@
       "description": "Lock the adapter session after this many minutes of inactivity. Range 1–1440.",
       "default": "15",
       "placeholder": "15"
+    },
+    {
+      "name": "enableTouchIdReauth",
+      "type": "checkbox",
+      "required": false,
+      "default": false,
+      "label": "Enable Touch ID for re-unlock",
+      "description": "macOS only. Stores credentials encrypted in Keychain for biometric re-unlock on this device (Touch ID, Apple Watch, or device passcode)."
+    },
+    {
+      "name": "touchIdOnlyForReauth",
+      "type": "checkbox",
+      "required": false,
+      "default": true,
+      "label": "Touch ID only after timeout",
+      "description": "macOS only. When enabled, Touch ID is never used for the first unlock after opening Search Passwords — only after a session timeout or Lock."
     }
   ],
   "dependencies": {
@@ -108,8 +124,9 @@
   },
   "scripts": {
     "sync-preferences": "node scripts/sync-preferences.mjs",
-    "build": "npm run sync-preferences && ray build -e dev -o \"$HOME/.config/raycast/extensions/raycast-pwm\"",
-    "dev": "ray develop",
+    "build-biometric": "node scripts/build-biometric-auth.mjs",
+    "build": "npm run sync-preferences && npm run build-biometric && ray build -e dev -o \"$HOME/.config/raycast/extensions/raycast-pwm\"",
+    "dev": "npm run build-biometric && ray develop",
     "fix-lint": "ray lint --fix",
     "lint": "ray lint",
     "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
