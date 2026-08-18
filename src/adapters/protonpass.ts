@@ -1,6 +1,7 @@
 import { getCliPathOverride } from "../registry";
 import type { AdapterStatus, ItemAvailability, PasswordManagerAdapter, VaultItem } from "../types";
 import { parseJson, resolveBinary, runCli } from "../utils/cli";
+import { filterVaultItems } from "../utils/items";
 
 const ITEM_ID_SEPARATOR = "::";
 
@@ -175,17 +176,42 @@ function resolveItemTitle(item: ItemSummary): string {
   return item.content?.title?.trim() || item.title?.trim() || "Untitled";
 }
 
-function matchesQuery(title: string, vaultName: string, login: LoginFields, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) {
-    return true;
+async function loadAllItems(): Promise<VaultItem[]> {
+  const vaults = await listVaults();
+  const vaultNames = new Map(vaults.map((vault) => [vault.share_id, vault.name]));
+
+  const itemLists = await Promise.all(vaults.map((vault) => listItemsInVault(vault.share_id)));
+
+  const results: VaultItem[] = [];
+
+  for (let i = 0; i < vaults.length; i++) {
+    const vault = vaults[i];
+    const items = itemLists[i];
+
+    for (const item of items) {
+      if (!isLoginItem(item) || !isActiveItem(item)) {
+        continue;
+      }
+
+      const shareId = item.share_id ?? vault.share_id;
+      const vaultName = vaultNames.get(shareId) ?? vault.name;
+      const title = resolveItemTitle(item);
+      const login = extractLoginFields(item);
+
+      results.push({
+        id: encodeItemId(shareId, item.id),
+        title,
+        subtitle: vaultName,
+        username: login.username,
+        email: login.email,
+        url: login.url,
+        ...(login.hasTotp !== undefined ? { hasTotp: login.hasTotp } : {}),
+        managerId: protonPassAdapter.id,
+      });
+    }
   }
 
-  const haystack = [title, vaultName, login.username, login.email]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.toLowerCase());
-
-  return haystack.some((value) => value.includes(normalized));
+  return results.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 }
 
 export const protonPassAdapter: PasswordManagerAdapter = {
@@ -210,45 +236,12 @@ export const protonPassAdapter: PasswordManagerAdapter = {
     }
   },
 
+  async listItems(): Promise<VaultItem[]> {
+    return loadAllItems();
+  },
+
   async searchItems(query: string): Promise<VaultItem[]> {
-    const vaults = await listVaults();
-    const vaultNames = new Map(vaults.map((vault) => [vault.share_id, vault.name]));
-
-    const itemLists = await Promise.all(vaults.map((vault) => listItemsInVault(vault.share_id)));
-
-    const results: VaultItem[] = [];
-
-    for (let i = 0; i < vaults.length; i++) {
-      const vault = vaults[i];
-      const items = itemLists[i];
-
-      for (const item of items) {
-        if (!isLoginItem(item) || !isActiveItem(item)) {
-          continue;
-        }
-
-        const shareId = item.share_id ?? vault.share_id;
-        const vaultName = vaultNames.get(shareId) ?? vault.name;
-        const title = resolveItemTitle(item);
-        const login = extractLoginFields(item);
-        if (!matchesQuery(title, vaultName, login, query)) {
-          continue;
-        }
-
-        results.push({
-          id: encodeItemId(shareId, item.id),
-          title,
-          subtitle: vaultName,
-          username: login.username,
-          email: login.email,
-          url: login.url,
-          ...(login.hasTotp !== undefined ? { hasTotp: login.hasTotp } : {}),
-          managerId: protonPassAdapter.id,
-        });
-      }
-    }
-
-    return results.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+    return filterVaultItems(await loadAllItems(), query);
   },
 
   async getPassword(item: VaultItem): Promise<string> {

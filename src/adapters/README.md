@@ -34,8 +34,12 @@ export const onePasswordAdapter: PasswordManagerAdapter = {
     }
   },
 
+  async listItems(): Promise<VaultItem[]> {
+    // op item list --format json — volle Liste für lokales Filtern in der UI
+  },
+
   async searchItems(query: string): Promise<VaultItem[]> {
-    // op item list --format json, dann filtern
+    // Optional: filterVaultItems(await listItems(), query)
   },
 
   async getPassword(item: VaultItem): Promise<string> {
@@ -91,7 +95,8 @@ Beim Hinzufügen eines neuen Adapters `npm run sync-preferences` ausführen, dam
 | Methode                | Zweck                                                                                   |
 | ---------------------- | --------------------------------------------------------------------------------------- |
 | `isAvailable()`        | CLI installiert und Session/Auth gültig?                                                |
-| `searchItems(query)`   | Einträge suchen/listen                                                                  |
+| `listItems?()`         | Volle Item-Liste (empfohlen bei vollem Vault-Load; UI cached pro Session)               |
+| `searchItems(query)`   | Einträge suchen/listen (für serverseitige Suche oder als Fallback ohne `listItems`)     |
 | `getPassword(item)`    | Passwort für Item-ID holen                                                              |
 | `getUsername(item)`    | Username holen (optional)                                                               |
 | `getEmail(item)`       | E-Mail holen (optional)                                                                 |

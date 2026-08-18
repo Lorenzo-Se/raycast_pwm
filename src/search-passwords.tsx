@@ -16,8 +16,9 @@ import {
 import { useCachedPromise, usePromise } from "@raycast/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { getAdapters, getAvailableAdapters, resolveManagerId } from "./registry";
+import { getAdapter, getAdapters, getAvailableAdapters, resolveManagerId } from "./registry";
 import type { ItemAvailability, PasswordManagerAdapter, VaultItem } from "./types";
+import { filterVaultItems } from "./utils/items";
 
 const TOTP_DELAY_MS = 5000;
 
@@ -31,6 +32,7 @@ const SHORTCUTS = {
 interface CredentialActionOptions {
   scheduleTotp?: boolean;
   autoCopyTotpAfterPassword?: boolean;
+  hasTotp?: boolean;
   adapter?: PasswordManagerAdapter;
   item?: VaultItem;
 }
@@ -98,17 +100,12 @@ function actionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function shouldScheduleTotpCopy(options?: CredentialActionOptions): Promise<boolean> {
+function shouldScheduleTotpCopy(options?: CredentialActionOptions): boolean {
   if (!options?.scheduleTotp || !options.autoCopyTotpAfterPassword || !options.adapter || !options.item) {
     return false;
   }
 
-  try {
-    const totp = await options.adapter.getTotp(options.item);
-    return Boolean(totp?.trim());
-  } catch {
-    return false;
-  }
+  return options.hasTotp === true;
 }
 
 async function scheduleTotpCopy(adapter: PasswordManagerAdapter, item: VaultItem): Promise<void> {
@@ -150,7 +147,7 @@ async function copyCredential(
 ): Promise<void> {
   await Clipboard.copy(value);
 
-  const scheduleTotp = await shouldScheduleTotpCopy(options);
+  const scheduleTotp = shouldScheduleTotpCopy(options);
 
   await closeThenToast(
     {
@@ -169,7 +166,7 @@ async function copyCredential(
 async function pasteCredential(label: string, value: string, options?: CredentialActionOptions): Promise<void> {
   await Clipboard.paste(value);
 
-  const scheduleTotp = await shouldScheduleTotpCopy(options);
+  const scheduleTotp = shouldScheduleTotpCopy(options);
 
   await closeThenToast(
     {
@@ -209,6 +206,7 @@ function ItemActions({
   const passwordTotpOptions: CredentialActionOptions = {
     scheduleTotp: true,
     autoCopyTotpAfterPassword,
+    hasTotp: availability.hasTotp,
     adapter,
     item,
   };
@@ -431,15 +429,38 @@ export default function SearchPasswords() {
 
   const activeManagerId = sessionManagerId ?? preferredManagerId;
   const selectedAdapter = availableAdapters.find((adapter) => adapter.id === activeManagerId);
+  const supportsLocalCache = Boolean(selectedAdapter?.listItems);
   const [searchText, setSearchText] = useState("");
 
   const {
-    data: items,
-    isLoading: isLoadingItems,
-    error: searchError,
+    data: allItems,
+    isLoading: isLoadingLocalItems,
+    error: localItemsError,
+    revalidate: revalidateLocalItems,
+  } = useCachedPromise(
+    async (managerId: string) => {
+      const adapter = getAdapter(managerId);
+      if (!adapter?.listItems) {
+        return [];
+      }
+
+      return adapter.listItems();
+    },
+    [activeManagerId ?? ""],
+    {
+      execute: Boolean(activeManagerId) && supportsLocalCache,
+      keepPreviousData: true,
+    },
+  );
+
+  const {
+    data: remoteItems,
+    isLoading: isLoadingRemoteItems,
+    error: remoteItemsError,
+    revalidate: revalidateRemoteItems,
   } = useCachedPromise(
     async (managerId: string, query: string) => {
-      const adapter = getAdapters().find((entry) => entry.id === managerId);
+      const adapter = getAdapter(managerId);
       if (!adapter) {
         return [];
       }
@@ -448,16 +469,37 @@ export default function SearchPasswords() {
     },
     [activeManagerId ?? "", searchText],
     {
-      execute: Boolean(activeManagerId),
+      execute: Boolean(activeManagerId) && !supportsLocalCache,
       keepPreviousData: false,
     },
   );
 
-  if (isLoadingAdapters) {
-    return <List searchBarPlaceholder="Loading password managers..." />;
+  const items = useMemo(() => {
+    if (supportsLocalCache) {
+      return allItems ? filterVaultItems(allItems, searchText) : undefined;
+    }
+
+    return remoteItems;
+  }, [allItems, remoteItems, searchText, supportsLocalCache]);
+
+  const isLoadingItems = supportsLocalCache ? isLoadingLocalItems : isLoadingRemoteItems;
+  const searchError = supportsLocalCache ? localItemsError : remoteItemsError;
+  const revalidateItems = supportsLocalCache ? revalidateLocalItems : revalidateRemoteItems;
+
+  async function reloadItems(): Promise<void> {
+    try {
+      await revalidateItems();
+      await showToast({ style: Toast.Style.Success, title: "Items reloaded" });
+    } catch (error) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Failed to reload items",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  if (availableAdapters.length === 0) {
+  if (!isLoadingAdapters && availableAdapters.length === 0) {
     const setupMarkdown = [
       "# No password manager available",
       "",
@@ -479,10 +521,6 @@ export default function SearchPasswords() {
     return <Detail markdown={setupMarkdown} />;
   }
 
-  if (!preferredManagerId) {
-    return <List isLoading />;
-  }
-
   const unavailableSelection = unavailableAdapters.find(({ adapter }) => adapter.id === activeManagerId);
 
   return (
@@ -492,43 +530,52 @@ export default function SearchPasswords() {
       onSearchTextChange={setSearchText}
       searchBarPlaceholder="Search passwords..."
       throttle
-      isLoading={isLoadingItems}
+      isLoading={isLoadingAdapters || isLoadingItems}
+      actions={
+        selectedAdapter ? (
+          <ActionPanel>
+            <Action title="Reload Items" icon={Icon.ArrowClockwise} onAction={reloadItems} />
+          </ActionPanel>
+        ) : undefined
+      }
       searchBarAccessory={
-        <List.Dropdown
-          key={`manager-${preferences.defaultManagerId}-${preferredManagerId}`}
-          id="pwm-manager"
-          tooltip="Password Manager"
-          storeValue={false}
-          value={activeManagerId}
-          onChange={(managerId) => {
-            dropdownChangeCountRef.current += 1;
+        preferredManagerId ? (
+          <List.Dropdown
+            key={`manager-${preferences.defaultManagerId}-${preferredManagerId}`}
+            id="pwm-manager"
+            tooltip="Password Manager"
+            storeValue={false}
+            value={activeManagerId}
+            onChange={(managerId) => {
+              dropdownChangeCountRef.current += 1;
 
-            if (dropdownChangeCountRef.current === 1 && managerId !== preferredManagerId) {
-              return;
-            }
+              if (dropdownChangeCountRef.current === 1 && managerId !== preferredManagerId) {
+                return;
+              }
 
-            setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
-          }}
-        >
-          <List.Dropdown.Section title="Available">
-            {availableAdapters.map((adapter) => (
-              <List.Dropdown.Item key={adapter.id} title={adapter.name} value={adapter.id} />
-            ))}
-          </List.Dropdown.Section>
-          {unavailableAdapters.length > 0 && (
-            <List.Dropdown.Section title="Unavailable">
-              {unavailableAdapters.map(({ adapter, status }) => (
-                <List.Dropdown.Item
-                  key={adapter.id}
-                  title={adapter.name}
-                  value={adapter.id}
-                  icon={Icon.ExclamationMark}
-                  subtitle={status.ok ? undefined : status.reason}
-                />
+              setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
+            }}
+          >
+            <List.Dropdown.Section title="Available">
+              {availableAdapters.map((adapter) => (
+                <List.Dropdown.Item key={adapter.id} title={adapter.name} value={adapter.id} />
               ))}
             </List.Dropdown.Section>
-          )}
-        </List.Dropdown>
+            {unavailableAdapters.length > 0 && (
+              <List.Dropdown.Section title="Unavailable">
+                {unavailableAdapters.map(({ adapter, status }) => (
+                  <List.Dropdown.Item
+                    key={adapter.id}
+                    title={adapter.name}
+                    value={adapter.id}
+                    icon={Icon.ExclamationMark}
+                    subtitle={status.ok ? undefined : status.reason}
+                  />
+                ))}
+              </List.Dropdown.Section>
+            )}
+          </List.Dropdown>
+        ) : undefined
       }
     >
       {searchError && (

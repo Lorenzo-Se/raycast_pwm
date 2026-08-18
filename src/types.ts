@@ -27,6 +27,9 @@ export interface PasswordManagerAdapter {
 
   isAvailable(): Promise<AdapterStatus>;
 
+  /** Full item list for local filtering. UI caches this per session when implemented. */
+  listItems?(): Promise<VaultItem[]>;
+
   searchItems(query: string): Promise<VaultItem[]>;
 
   getPassword(item: VaultItem): Promise<string>;

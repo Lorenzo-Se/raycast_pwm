@@ -1,6 +1,7 @@
 import { showToast, Toast } from "@raycast/api";
 
 import type { AdapterStatus, ItemAvailability, PasswordManagerAdapter, VaultItem } from "../types";
+import { filterVaultItems } from "../utils/items";
 
 /**
  * Template / reference adapter with mock data for development and testing.
@@ -90,24 +91,12 @@ export const templateAdapter: PasswordManagerAdapter = {
     return { ok: true };
   },
 
+  async listItems(): Promise<VaultItem[]> {
+    return MOCK_ENTRIES.map(toVaultItem);
+  },
+
   async searchItems(query: string): Promise<VaultItem[]> {
-    // Real adapter example (1Password):
-    // const stdout = await runCli(binary, ["item", "list", "--format", "json"]);
-    // const items = parseJson<OpItem[]>(stdout);
-    // return items.filter(...).map(...)
-
-    const normalized = query.trim().toLowerCase();
-    const filtered = normalized
-      ? MOCK_ENTRIES.filter(
-          (e) =>
-            e.title.toLowerCase().includes(normalized) ||
-            e.subtitle.toLowerCase().includes(normalized) ||
-            e.username.toLowerCase().includes(normalized) ||
-            e.email?.toLowerCase().includes(normalized),
-        )
-      : MOCK_ENTRIES;
-
-    return filtered.map(toVaultItem);
+    return filterVaultItems(await templateAdapter.listItems!(), query);
   },
 
   async getPassword(item: VaultItem): Promise<string> {
