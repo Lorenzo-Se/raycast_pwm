@@ -16,17 +16,30 @@ import {
 import { useCachedPromise, usePromise } from "@raycast/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { getAdapter, getAdapters, getAvailableAdapters, resolveManagerId } from "./registry";
+import { getExternalAdaptersDirectoryForDisplay } from "./registry/load-external-adapters";
+import { getAvailableAdapters, loadAdapters, resolveManagerId } from "./registry";
 import type { ItemAvailability, PasswordManagerAdapter, VaultItem } from "./types";
 import { filterVaultItems } from "./utils/items";
 
 const TOTP_DELAY_MS = 5000;
 
-const SHORTCUTS = {
-  pastePassword: { modifiers: ["cmd", "shift"], key: "return" as const },
-  copyEmail: { modifiers: ["cmd"], key: "c" as const },
-  copyPassword: { modifiers: ["cmd", "shift"], key: "c" as const },
-  copyTotp: { modifiers: ["cmd"], key: "t" as const },
+const SHORTCUTS: Record<string, Keyboard.Shortcut> = {
+  pastePassword: {
+    macOS: { modifiers: ["cmd", "shift"], key: "return" },
+    Windows: { modifiers: ["ctrl", "shift"], key: "enter" },
+  },
+  copyEmail: {
+    macOS: { modifiers: ["cmd"], key: "c" },
+    Windows: { modifiers: ["ctrl"], key: "c" },
+  },
+  copyPassword: {
+    macOS: { modifiers: ["cmd", "shift"], key: "c" },
+    Windows: { modifiers: ["ctrl", "shift"], key: "c" },
+  },
+  copyTotp: {
+    macOS: { modifiers: ["cmd"], key: "t" },
+    Windows: { modifiers: ["ctrl"], key: "t" },
+  },
 };
 
 interface CredentialActionOptions {
@@ -402,7 +415,7 @@ export default function SearchPasswords() {
 
   const { data: adapterStatuses, isLoading: isLoadingAdapters } = usePromise(getAvailableAdapters);
 
-  const allAdapters = useMemo(() => getAdapters(), []);
+  const allAdapters = useMemo(() => adapterStatuses?.map((entry) => entry.adapter) ?? [], [adapterStatuses]);
 
   const availableAdapters = useMemo(
     () => adapterStatuses?.filter((entry) => entry.status.ok).map((entry) => entry.adapter) ?? [],
@@ -414,10 +427,11 @@ export default function SearchPasswords() {
     [adapterStatuses],
   );
 
-  const preferredManagerId = useMemo(
-    () => resolveManagerId(preferences.defaultManagerId, availableAdapters, allAdapters),
-    [allAdapters, availableAdapters, preferences.defaultManagerId],
-  );
+  const preferredManagerId = useMemo(() => {
+    const override = preferences.defaultManagerOverride?.trim();
+    const preferred = override || preferences.defaultManagerId;
+    return resolveManagerId(preferred, availableAdapters, allAdapters);
+  }, [allAdapters, availableAdapters, preferences.defaultManagerId, preferences.defaultManagerOverride]);
 
   const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
   const dropdownChangeCountRef = useRef(0);
@@ -425,7 +439,7 @@ export default function SearchPasswords() {
   useEffect(() => {
     dropdownChangeCountRef.current = 0;
     setSessionManagerId(undefined);
-  }, [preferences.defaultManagerId, preferredManagerId]);
+  }, [preferences.defaultManagerId, preferences.defaultManagerOverride, preferredManagerId]);
 
   const activeManagerId = sessionManagerId ?? preferredManagerId;
   const selectedAdapter = availableAdapters.find((adapter) => adapter.id === activeManagerId);
@@ -439,7 +453,8 @@ export default function SearchPasswords() {
     revalidate: revalidateLocalItems,
   } = useCachedPromise(
     async (managerId: string) => {
-      const adapter = getAdapter(managerId);
+      const adapters = await loadAdapters();
+      const adapter = adapters.find((entry) => entry.id === managerId);
       if (!adapter?.listItems) {
         return [];
       }
@@ -460,7 +475,8 @@ export default function SearchPasswords() {
     revalidate: revalidateRemoteItems,
   } = useCachedPromise(
     async (managerId: string, query: string) => {
-      const adapter = getAdapter(managerId);
+      const adapters = await loadAdapters();
+      const adapter = adapters.find((entry) => entry.id === managerId);
       if (!adapter) {
         return [];
       }
@@ -500,22 +516,34 @@ export default function SearchPasswords() {
   }
 
   if (!isLoadingAdapters && availableAdapters.length === 0) {
+    const externalDirectory = getExternalAdaptersDirectoryForDisplay();
     const setupMarkdown = [
       "# No password manager available",
       "",
-      "Register adapters in `src/adapters/index.ts` and ensure their CLI is installed.",
+      "Register built-in adapters in `src/adapters/index.ts`, install their CLIs, or add external adapters.",
       "",
       "## Registered adapters",
       "",
-      ...allAdapters.map((adapter) => {
-        const status = adapterStatuses?.find((entry) => entry.adapter.id === adapter.id)?.status;
-        const reason = status && !status.ok ? status.reason : "Unknown";
-        return `- **${adapter.name}** (${adapter.id}): ${reason}`;
-      }),
+      ...(allAdapters.length > 0
+        ? allAdapters.map((adapter) => {
+            const status = adapterStatuses?.find((entry) => entry.adapter.id === adapter.id)?.status;
+            const reason = status && !status.ok ? status.reason : "Unknown";
+            const kind = adapter.kind === "external" ? "external" : "built-in";
+            return `- **${adapter.name}** (${adapter.id}, ${kind}): ${reason}`;
+          })
+        : ["- No adapters registered"]),
+      "",
+      "## External adapters",
+      "",
+      externalDirectory
+        ? `Scanning \`${externalDirectory}\` for subfolders with \`pwm-adapter.json\`.`
+        : "Set extension preference **External Adapters Directory** (e.g. `~/.config/raycast-pwm/adapters`).",
+      "",
+      "See `examples/external-adapter/template` for a reference implementation.",
       "",
       "## CLI path overrides",
       "",
-      'Set extension preference `CLI Path Overrides (JSON)` e.g. `{"1password": "/opt/homebrew/bin/op"}`',
+      'Set extension preference `CLI Path Overrides (JSON)` e.g. `{"1password": "/opt/homebrew/bin/op"}` on macOS or `{"protonpass": "%LOCALAPPDATA%\\\\Programs\\\\pass-cli\\\\pass-cli.exe"}` on Windows',
     ].join("\n");
 
     return <Detail markdown={setupMarkdown} />;

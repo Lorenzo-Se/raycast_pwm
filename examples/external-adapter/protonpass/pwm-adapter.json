@@ -1,0 +1,15 @@
+{
+  "id": "protonpass-external",
+  "name": "Proton Pass (External)",
+  "command": "./adapter.js",
+  "capabilities": [
+    "listItems",
+    "getPassword",
+    "getUsername",
+    "getEmail",
+    "getTotp",
+    "getUrl",
+    "getItemAvailability"
+  ],
+  "env": {}
+}

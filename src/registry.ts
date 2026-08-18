@@ -1,15 +1,38 @@
 import { getPreferenceValues } from "@raycast/api";
 
-import { adapters } from "./adapters";
+import { adapters as builtinAdapters } from "./adapters";
+import { loadExternalAdapters } from "./registry/load-external-adapters";
 import type { AdapterStatus, CliPathOverrides, PasswordManagerAdapter } from "./types";
 import { resolveBinary } from "./utils/cli";
 
+let adapterCache: PasswordManagerAdapter[] | undefined;
+
+export async function loadAdapters(): Promise<PasswordManagerAdapter[]> {
+  if (adapterCache) {
+    return adapterCache;
+  }
+
+  const externalAdapters = await loadExternalAdapters();
+  const builtinIds = new Set(builtinAdapters.map((adapter) => adapter.id));
+
+  const filteredExternal = externalAdapters.filter((adapter) => {
+    if (builtinIds.has(adapter.id)) {
+      console.warn(`Skipping external adapter "${adapter.id}": builtin adapter takes precedence`);
+      return false;
+    }
+    return true;
+  });
+
+  adapterCache = [...builtinAdapters, ...filteredExternal];
+  return adapterCache;
+}
+
 export function getAdapters(): PasswordManagerAdapter[] {
-  return adapters;
+  return adapterCache ?? builtinAdapters;
 }
 
 export function getAdapter(id: string): PasswordManagerAdapter | undefined {
-  return adapters.find((a) => a.id === id);
+  return getAdapters().find((adapter) => adapter.id === id);
 }
 
 export function parseCliPathOverrides(raw: string | undefined): CliPathOverrides {
@@ -35,6 +58,17 @@ export function getCliPathOverride(adapterId: string): string | undefined {
 }
 
 export async function checkAdapterAvailability(adapter: PasswordManagerAdapter): Promise<AdapterStatus> {
+  if (adapter.kind === "external") {
+    try {
+      return await adapter.isAvailable();
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   const customPath = getCliPathOverride(adapter.id);
   const binary = await resolveBinary(adapter.cliBinary, customPath);
 
@@ -51,8 +85,10 @@ export async function checkAdapterAvailability(adapter: PasswordManagerAdapter):
 export async function getAvailableAdapters(): Promise<
   Array<{ adapter: PasswordManagerAdapter; status: AdapterStatus }>
 > {
+  const allAdapters = await loadAdapters();
+
   const results = await Promise.all(
-    adapters.map(async (adapter) => ({
+    allAdapters.map(async (adapter) => ({
       adapter,
       status: await checkAdapterAvailability(adapter),
     })),
@@ -86,8 +122,11 @@ export function resolveManagerId(
   return availableAdapters[0]?.id;
 }
 
-export function getDefaultAdapterId(availableIds: string[], preferredId?: string): string | undefined {
-  const preferences = getPreferenceValues<{ defaultManagerId?: string }>();
-  const availableAdapters = adapters.filter((adapter) => availableIds.includes(adapter.id));
-  return resolveManagerId(preferredId ?? preferences.defaultManagerId, availableAdapters, adapters);
+export function getDefaultManagerId(availableIds: string[], preferredId?: string): string | undefined {
+  const preferences = getPreferenceValues<{ defaultManagerId?: string; defaultManagerOverride?: string }>();
+  const override = preferences.defaultManagerOverride?.trim();
+  const preferred = override || preferredId || preferences.defaultManagerId;
+  const allAdapters = getAdapters();
+  const availableAdapters = allAdapters.filter((adapter) => availableIds.includes(adapter.id));
+  return resolveManagerId(preferred, availableAdapters, allAdapters);
 }

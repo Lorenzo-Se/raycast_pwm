@@ -20,10 +20,25 @@ export interface ItemAvailability {
 
 export type AdapterStatus = { ok: true } | { ok: false; reason: string };
 
+export interface ExternalAdapterManifestFile {
+  id: string;
+  name: string;
+  command: string;
+  capabilities?: string[];
+  env?: Record<string, string>;
+}
+
+export interface ExternalAdapterManifest extends ExternalAdapterManifestFile {
+  workingDirectory: string;
+  executable: string;
+  args: string[];
+}
+
 export interface PasswordManagerAdapter {
   readonly id: string;
   readonly name: string;
   readonly cliBinary: string;
+  readonly kind?: "builtin" | "external";
 
   isAvailable(): Promise<AdapterStatus>;
 

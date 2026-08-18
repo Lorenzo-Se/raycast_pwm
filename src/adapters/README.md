@@ -111,3 +111,51 @@ Beim Hinzufügen eines neuen Adapters `npm run sync-preferences` ausführen, dam
 - `parseJson<T>(stdout)` — JSON-Ausgabe parsen
 
 Alle in `src/utils/cli.ts`.
+
+## Externe Adapter (Third-Party)
+
+Adapter können auch **außerhalb der Extension** liegen und per JSON-Stdio-Protokoll angesprochen werden. Die Extension startet dabei einen separaten Prozess — kein dynamisches Laden von Extension-Code.
+
+### Setup
+
+1. Adapter-Ordner anlegen, z. B. `~/.config/raycast-pwm/adapters/my-adapter/`
+2. `pwm-adapter.json` + ausführbares Script hinzufügen
+3. In den Extension-Einstellungen **External Adapters Directory** auf den übergeordneten Ordner setzen
+
+Beispiel:
+
+```
+~/.config/raycast-pwm/adapters/
+  my-adapter/
+    pwm-adapter.json
+    adapter.js
+```
+
+Referenz: [`examples/external-adapter/template`](../../examples/external-adapter/template/README.md) (Mock), [`examples/external-adapter/protonpass`](../../examples/external-adapter/protonpass/README.md) (Proton Pass CLI)
+
+### Manifest (`pwm-adapter.json`)
+
+```json
+{
+  "id": "my-adapter",
+  "name": "My Password Manager",
+  "command": "./adapter.js",
+  "capabilities": ["listItems", "getUrl", "getItemAvailability"]
+}
+```
+
+`capabilities` steuert optionale Methoden. Immer verfügbar über das Protokoll:
+
+- `isAvailable`, `searchItems`, `getPassword`, `getUsername`, `getEmail`, `getTotp`
+
+### Sicherheit
+
+- Die Extension führt nur vom User konfigurierte Adapter-Commands aus (`execFile`, kein Shell)
+- Adapter-Code läuft als separater User-Prozess
+- Nur vertrauenswürdige Adapter installieren
+
+### Built-in vs. extern
+
+- Gleiche `id` wie ein Built-in-Adapter → Built-in hat Vorrang, externer Adapter wird übersprungen
+- Externe Adapter erscheinen automatisch im Manager-Dropdown der Suche
+- Für externe Adapter als Default: **Default Manager Override** in den Einstellungen setzen

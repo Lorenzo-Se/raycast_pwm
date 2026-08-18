@@ -43,12 +43,34 @@
       ]
     },
     {
+      "name": "externalAdaptersDirectory",
+      "type": "textfield",
+      "required": false,
+      "title": "External Adapters Directory",
+      "description": "Path to a folder containing third-party adapter subfolders (each with pwm-adapter.json), e.g. ~/.config/raycast-pwm/adapters on macOS or %USERPROFILE%\\.config\\raycast-pwm\\adapters on Windows",
+      "placeholder": {
+        "macOS": "~/.config/raycast-pwm/adapters",
+        "Windows": "%USERPROFILE%\\.config\\raycast-pwm\\adapters"
+      }
+    },
+    {
+      "name": "defaultManagerOverride",
+      "type": "textfield",
+      "required": false,
+      "title": "Default Manager Override",
+      "description": "Optional adapter ID override (e.g. for external adapters). Takes precedence over the Default Manager dropdown.",
+      "placeholder": "bitwarden"
+    },
+    {
       "name": "cliPathOverrides",
       "type": "textfield",
       "required": false,
       "title": "CLI Path Overrides (JSON)",
-      "description": "Optional JSON map of adapter ID to CLI binary path, e.g. {\"1password\": \"/opt/homebrew/bin/op\"}",
-      "placeholder": "{\"1password\": \"/opt/homebrew/bin/op\"}"
+      "description": "Optional JSON map of adapter ID to CLI binary path, e.g. {\"1password\": \"/opt/homebrew/bin/op\"} on macOS or {\"protonpass\": \"C:\\\\Users\\\\you\\\\AppData\\\\Local\\\\Programs\\\\pass-cli\\\\pass-cli.exe\"} on Windows",
+      "placeholder": {
+        "macOS": "{\"1password\": \"/opt/homebrew/bin/op\"}",
+        "Windows": "{\"protonpass\": \"%LOCALAPPDATA%\\\\Programs\\\\pass-cli\\\\pass-cli.exe\"}"
+      }
     },
     {
       "name": "closeAfterCopy",
@@ -89,6 +111,7 @@
     "publish": "npx @raycast/api@latest publish"
   },
   "platforms": [
-    "macOS"
+    "macOS",
+    "Windows"
   ]
 }

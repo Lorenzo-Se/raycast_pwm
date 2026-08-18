@@ -1,0 +1,14 @@
+{
+  "id": "template-external",
+  "name": "Template External (Mock)",
+  "command": "./adapter.js",
+  "capabilities": [
+    "listItems",
+    "getPassword",
+    "getUsername",
+    "getEmail",
+    "getTotp",
+    "getUrl",
+    "getItemAvailability"
+  ]
+}
