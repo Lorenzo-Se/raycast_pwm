@@ -94,6 +94,14 @@ function parseManifestFile(contents: string, directoryPath: string): ExternalAda
     throw new Error(`Manifest env in ${directoryPath} must be an object`);
   }
 
+  let mode: ExternalAdapterManifest["mode"] = undefined;
+  const rawMode = (parsed as { mode?: unknown }).mode;
+  if (rawMode === "persistent" || rawMode === "one-shot") {
+    mode = rawMode;
+  } else if (rawMode !== undefined) {
+    console.warn(`Unknown adapter mode "${String(rawMode)}" in ${directoryPath}; using one-shot`);
+  }
+
   const command = resolveExternalCommand(directoryPath, manifest.command);
 
   return {
@@ -102,6 +110,7 @@ function parseManifestFile(contents: string, directoryPath: string): ExternalAda
     command: manifest.command.trim(),
     capabilities: manifest.capabilities,
     env: manifest.env,
+    mode,
     workingDirectory: command.workingDirectory,
     executable: command.executable,
     args: command.args,

@@ -1,17 +1,24 @@
 import type { ExternalAdapterManifest, PasswordManagerAdapter, VaultItem } from "../types";
 import {
+  assertAuthRequirementsResult,
   assertIsAvailableResult,
   assertItemAvailabilityResult,
   assertItemsResult,
   assertValueResult,
   invokeExternalAdapter,
   normalizeVaultItems,
+  STATELESS_EXTERNAL_METHODS,
   type ExternalAdapterMethod,
   type OptionalExternalCapability,
 } from "./external-protocol";
+import { getExistingSession, getOrCreateSession, getSessionIdleTimeoutMs } from "./external-session";
 
 function hasCapability(manifest: ExternalAdapterManifest, capability: OptionalExternalCapability): boolean {
   return manifest.capabilities?.includes(capability) ?? false;
+}
+
+function isPersistent(manifest: ExternalAdapterManifest): boolean {
+  return manifest.mode === "persistent";
 }
 
 async function callAdapter<T>(
@@ -20,17 +27,24 @@ async function callAdapter<T>(
   params: Record<string, unknown>,
   mapResult: (result: unknown) => T,
 ): Promise<T> {
-  const result = await invokeExternalAdapter(
-    {
-      executable: manifest.executable,
-      args: manifest.args,
-      cwd: manifest.workingDirectory,
-      env: manifest.env,
-    },
-    method,
-    params,
-  );
+  const command = {
+    executable: manifest.executable,
+    args: manifest.args,
+    cwd: manifest.workingDirectory,
+    env: manifest.env,
+  };
 
+  if (isPersistent(manifest)) {
+    const existing = getExistingSession(manifest.id);
+    const useSession = Boolean(existing) || !STATELESS_EXTERNAL_METHODS.includes(method);
+
+    if (useSession) {
+      const session = getOrCreateSession(manifest);
+      return mapResult(await session.invoke(method, params));
+    }
+  }
+
+  const result = await invokeExternalAdapter(command, method, params);
   return mapResult(result);
 }
 
@@ -42,8 +56,7 @@ export function createExternalScriptAdapter(manifest: ExternalAdapterManifest): 
     cliBinary: "",
 
     async isAvailable() {
-      const result = await callAdapter(manifest, "isAvailable", {}, assertIsAvailableResult);
-      return result;
+      return callAdapter(manifest, "isAvailable", {}, assertIsAvailableResult);
     },
 
     async searchItems(query: string): Promise<VaultItem[]> {
@@ -94,6 +107,23 @@ export function createExternalScriptAdapter(manifest: ExternalAdapterManifest): 
   if (hasCapability(manifest, "openInManager")) {
     adapter.openInManager = async (item: VaultItem) => {
       await callAdapter(manifest, "openInManager", { item }, () => undefined);
+    };
+  }
+
+  if (hasCapability(manifest, "getAuthRequirements")) {
+    adapter.getAuthRequirements = async () => {
+      return callAdapter(manifest, "getAuthRequirements", {}, assertAuthRequirementsResult);
+    };
+  }
+
+  if (hasCapability(manifest, "authenticate")) {
+    adapter.authenticate = async (credentials) => {
+      return callAdapter(
+        manifest,
+        "authenticate",
+        { credentials, idleTimeoutMs: getSessionIdleTimeoutMs() },
+        assertIsAvailableResult,
+      );
     };
   }
 

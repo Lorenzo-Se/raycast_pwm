@@ -16,12 +16,40 @@ import {
 import { useCachedPromise, usePromise } from "@raycast/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  cancelScheduledDispose,
+  disposeSession,
+  parseSessionTimeoutMinutes,
+  scheduleDisposeAllSessions,
+} from "./adapters/external-session";
 import { getExternalAdaptersDirectoryForDisplay } from "./registry/load-external-adapters";
-import { getAvailableAdapters, loadAdapters, resolveManagerId } from "./registry";
+import {
+  adapterNeedsAuth,
+  getAvailableAdapters,
+  isAdapterSelectable,
+  loadAdapters,
+  resolveManagerId,
+} from "./registry";
 import type { ItemAvailability, PasswordManagerAdapter, VaultItem } from "./types";
+import { UnlockForm } from "./unlock-form";
 import { filterVaultItems } from "./utils/items";
 
 const TOTP_DELAY_MS = 5000;
+const SESSION_DISPOSE_REMOUNT_GRACE_MS = 250;
+
+let pendingTotpCopies = 0;
+
+function beginPendingTotpCopy(): void {
+  pendingTotpCopies += 1;
+}
+
+function endPendingTotpCopy(): void {
+  pendingTotpCopies = Math.max(0, pendingTotpCopies - 1);
+}
+
+function pendingSessionDisposeDelayMs(): number {
+  return pendingTotpCopies > 0 ? TOTP_DELAY_MS + 500 : 0;
+}
 
 const SHORTCUTS: Record<string, Keyboard.Shortcut> = {
   pastePassword: {
@@ -96,13 +124,25 @@ function ItemAction({
   icon,
   shortcut,
   onAction,
+  onActivity,
 }: {
   title: string;
   icon: Image.ImageLike;
   shortcut?: Keyboard.Shortcut;
   onAction: () => Promise<void>;
+  onActivity?: () => void;
 }) {
-  return <Action title={title} icon={icon} shortcut={shortcut} onAction={onAction} />;
+  return (
+    <Action
+      title={title}
+      icon={icon}
+      shortcut={shortcut}
+      onAction={async () => {
+        onActivity?.();
+        await onAction();
+      }}
+    />
+  );
 }
 
 async function showActionError(title: string, message?: string): Promise<void> {
@@ -152,6 +192,19 @@ async function closeThenToast(
   await showToast(toast);
 }
 
+function startScheduledTotpCopy(options?: CredentialActionOptions): boolean {
+  if (!shouldScheduleTotpCopy(options) || !options?.adapter || !options.item) {
+    return false;
+  }
+
+  beginPendingTotpCopy();
+  return true;
+}
+
+function finishScheduledTotpCopy(adapter: PasswordManagerAdapter, item: VaultItem): void {
+  void scheduleTotpCopy(adapter, item).finally(endPendingTotpCopy);
+}
+
 async function copyCredential(
   label: string,
   value: string,
@@ -160,7 +213,7 @@ async function copyCredential(
 ): Promise<void> {
   await Clipboard.copy(value);
 
-  const scheduleTotp = shouldScheduleTotpCopy(options);
+  const scheduleTotp = startScheduledTotpCopy(options);
 
   await closeThenToast(
     {
@@ -172,14 +225,16 @@ async function copyCredential(
   );
 
   if (scheduleTotp && options?.adapter && options.item) {
-    void scheduleTotpCopy(options.adapter, options.item);
+    finishScheduledTotpCopy(options.adapter, options.item);
+  } else if (scheduleTotp) {
+    endPendingTotpCopy();
   }
 }
 
 async function pasteCredential(label: string, value: string, options?: CredentialActionOptions): Promise<void> {
   await Clipboard.paste(value);
 
-  const scheduleTotp = shouldScheduleTotpCopy(options);
+  const scheduleTotp = startScheduledTotpCopy(options);
 
   await closeThenToast(
     {
@@ -191,7 +246,9 @@ async function pasteCredential(label: string, value: string, options?: Credentia
   );
 
   if (scheduleTotp && options?.adapter && options.item) {
-    void scheduleTotpCopy(options.adapter, options.item);
+    finishScheduledTotpCopy(options.adapter, options.item);
+  } else if (scheduleTotp) {
+    endPendingTotpCopy();
   }
 }
 
@@ -200,11 +257,13 @@ function ItemActions({
   adapter,
   closeAfterCopy,
   autoCopyTotpAfterPassword,
+  onActivity,
 }: {
   item: VaultItem;
   adapter: PasswordManagerAdapter;
   closeAfterCopy: boolean;
   autoCopyTotpAfterPassword: boolean;
+  onActivity: () => void;
 }) {
   const { data: availabilityData } = useCachedPromise(
     (vaultItem: VaultItem, pwdAdapter: PasswordManagerAdapter) => resolveItemAvailability(pwdAdapter, vaultItem),
@@ -229,6 +288,7 @@ function ItemActions({
       <ItemAction
         title="Open in Browser"
         icon={Icon.Globe}
+        onActivity={onActivity}
         onAction={async () => {
           if (!adapter.getUrl) {
             await showActionError("Not supported");
@@ -257,6 +317,7 @@ function ItemActions({
       <ItemAction
         title="Paste Email"
         icon={Icon.Envelope}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasEmail) {
             await showActionError("No email available");
@@ -280,6 +341,7 @@ function ItemActions({
         title="Paste Password"
         icon={Icon.Key}
         shortcut={SHORTCUTS.pastePassword}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasPassword) {
             await showActionError("No password available");
@@ -303,6 +365,7 @@ function ItemActions({
         title="Copy Email"
         icon={Icon.Envelope}
         shortcut={SHORTCUTS.copyEmail}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasEmail) {
             await showActionError("No email available");
@@ -326,6 +389,7 @@ function ItemActions({
         title="Copy Password"
         icon={Icon.Key}
         shortcut={SHORTCUTS.copyPassword}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasPassword) {
             await showActionError("No password available");
@@ -349,6 +413,7 @@ function ItemActions({
         title="Copy TOTP"
         icon={Icon.Clock}
         shortcut={SHORTCUTS.copyTotp}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasTotp) {
             await showActionError("No TOTP available");
@@ -371,6 +436,7 @@ function ItemActions({
       <ItemAction
         title="Copy Username"
         icon={Icon.Person}
+        onActivity={onActivity}
         onAction={async () => {
           if (!availability.hasUsername) {
             await showActionError("No username available");
@@ -394,6 +460,7 @@ function ItemActions({
         <ItemAction
           title="Open in Password Manager"
           icon={Icon.AppWindow}
+          onActivity={onActivity}
           onAction={async () => {
             try {
               await adapter.openInManager!(item);
@@ -409,7 +476,7 @@ function ItemActions({
 }
 
 export default function SearchPasswords() {
-  const preferences = getPreferenceValues<Preferences>();
+  const preferences = getPreferenceValues<Preferences & { sessionTimeoutMinutes?: string }>();
   const closeAfterCopy = preferences.closeAfterCopy ?? true;
   const autoCopyTotpAfterPassword = preferences.autoCopyTotpAfterPassword ?? false;
 
@@ -422,19 +489,37 @@ export default function SearchPasswords() {
     [adapterStatuses],
   );
 
+  const lockedAdapters = useMemo(
+    () => adapterStatuses?.filter((entry) => adapterNeedsAuth(entry.status)) ?? [],
+    [adapterStatuses],
+  );
+
   const unavailableAdapters = useMemo(
-    () => adapterStatuses?.filter((entry) => !entry.status.ok) ?? [],
+    () => adapterStatuses?.filter((entry) => !entry.status.ok && !adapterNeedsAuth(entry.status)) ?? [],
+    [adapterStatuses],
+  );
+
+  const selectableAdapters = useMemo(
+    () => adapterStatuses?.filter((entry) => isAdapterSelectable(entry.status)).map((entry) => entry.adapter) ?? [],
     [adapterStatuses],
   );
 
   const preferredManagerId = useMemo(() => {
     const override = preferences.defaultManagerOverride?.trim();
     const preferred = override || preferences.defaultManagerId;
-    return resolveManagerId(preferred, availableAdapters, allAdapters);
-  }, [allAdapters, availableAdapters, preferences.defaultManagerId, preferences.defaultManagerOverride]);
+    return resolveManagerId(preferred, selectableAdapters, allAdapters);
+  }, [allAdapters, selectableAdapters, preferences.defaultManagerId, preferences.defaultManagerOverride]);
 
   const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
+  const [unlockedIds, setUnlockedIds] = useState<string[]>([]);
+  const [searchText, setSearchText] = useState("");
   const dropdownChangeCountRef = useRef(0);
+  const lastActivityRef = useRef(Date.now());
+  const previousManagerIdRef = useRef<string | undefined>(undefined);
+
+  function markActivity(): void {
+    lastActivityRef.current = Date.now();
+  }
 
   useEffect(() => {
     dropdownChangeCountRef.current = 0;
@@ -442,9 +527,53 @@ export default function SearchPasswords() {
   }, [preferences.defaultManagerId, preferences.defaultManagerOverride, preferredManagerId]);
 
   const activeManagerId = sessionManagerId ?? preferredManagerId;
-  const selectedAdapter = availableAdapters.find((adapter) => adapter.id === activeManagerId);
+
+  useEffect(() => {
+    cancelScheduledDispose();
+    return () => {
+      scheduleDisposeAllSessions(SESSION_DISPOSE_REMOUNT_GRACE_MS + pendingSessionDisposeDelayMs());
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = previousManagerIdRef.current;
+    if (previous && previous !== activeManagerId) {
+      void disposeSession(previous);
+      setUnlockedIds((ids) => ids.filter((id) => id !== previous));
+    }
+
+    previousManagerIdRef.current = activeManagerId;
+  }, [activeManagerId]);
+
+  useEffect(() => {
+    if (!activeManagerId) {
+      return;
+    }
+
+    const timeoutMs = parseSessionTimeoutMinutes(preferences.sessionTimeoutMinutes) * 60_000;
+    const handle = setInterval(() => {
+      if (Date.now() - lastActivityRef.current < timeoutMs) {
+        return;
+      }
+
+      lastActivityRef.current = Date.now();
+      void disposeSession(activeManagerId);
+      setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
+    }, 1000);
+
+    return () => clearInterval(handle);
+  }, [activeManagerId, preferences.sessionTimeoutMinutes]);
+
+  const selectedAdapter = selectableAdapters.find((adapter) => adapter.id === activeManagerId);
+  const selectedStatus = adapterStatuses?.find((entry) => entry.adapter.id === activeManagerId)?.status;
+  const showUnlockForm = Boolean(
+    selectedAdapter && selectedStatus && adapterNeedsAuth(selectedStatus) && !unlockedIds.includes(selectedAdapter.id),
+  );
+  const isSessionReady = Boolean(
+    selectedAdapter && selectedStatus && (selectedStatus.ok || unlockedIds.includes(selectedAdapter.id)),
+  );
   const supportsLocalCache = Boolean(selectedAdapter?.listItems);
-  const [searchText, setSearchText] = useState("");
+  const canLoadItems = isSessionReady && !showUnlockForm;
 
   const {
     data: allItems,
@@ -463,7 +592,7 @@ export default function SearchPasswords() {
     },
     [activeManagerId ?? ""],
     {
-      execute: Boolean(activeManagerId) && supportsLocalCache,
+      execute: Boolean(activeManagerId) && supportsLocalCache && canLoadItems,
       keepPreviousData: true,
     },
   );
@@ -485,7 +614,7 @@ export default function SearchPasswords() {
     },
     [activeManagerId ?? "", searchText],
     {
-      execute: Boolean(activeManagerId) && !supportsLocalCache,
+      execute: Boolean(activeManagerId) && !supportsLocalCache && canLoadItems,
       keepPreviousData: false,
     },
   );
@@ -503,6 +632,7 @@ export default function SearchPasswords() {
   const revalidateItems = supportsLocalCache ? revalidateLocalItems : revalidateRemoteItems;
 
   async function reloadItems(): Promise<void> {
+    markActivity();
     try {
       await revalidateItems();
       await showToast({ style: Toast.Style.Success, title: "Items reloaded" });
@@ -515,7 +645,22 @@ export default function SearchPasswords() {
     }
   }
 
-  if (!isLoadingAdapters && availableAdapters.length === 0) {
+  function applyManagerSelection(managerId: string): void {
+    markActivity();
+    setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
+  }
+
+  function handleListManagerChange(managerId: string): void {
+    dropdownChangeCountRef.current += 1;
+
+    if (dropdownChangeCountRef.current === 1 && managerId !== preferredManagerId) {
+      return;
+    }
+
+    applyManagerSelection(managerId);
+  }
+
+  if (!isLoadingAdapters && selectableAdapters.length === 0) {
     const externalDirectory = getExternalAdaptersDirectoryForDisplay();
     const setupMarkdown = [
       "# No password manager available",
@@ -539,7 +684,7 @@ export default function SearchPasswords() {
         ? `Scanning \`${externalDirectory}\` for subfolders with \`pwm-adapter.json\`.`
         : "Set extension preference **External Adapters Directory** (e.g. `~/.config/raycast-pwm/adapters`).",
       "",
-      "See `examples/external-adapter/template` for a reference implementation.",
+      "See `examples/external-adapter/protonpass` or `examples/external-adapter/threepass` for reference implementations.",
       "",
       "## CLI path overrides",
       "",
@@ -551,14 +696,34 @@ export default function SearchPasswords() {
 
   const unavailableSelection = unavailableAdapters.find(({ adapter }) => adapter.id === activeManagerId);
 
+  if (showUnlockForm && selectedAdapter && activeManagerId) {
+    return (
+      <UnlockForm
+        adapter={selectedAdapter}
+        adapterStatuses={adapterStatuses ?? []}
+        activeManagerId={activeManagerId}
+        preferredManagerId={preferredManagerId}
+        onManagerChange={applyManagerSelection}
+        onUnlocked={() => {
+          markActivity();
+          setUnlockedIds((ids) => (ids.includes(selectedAdapter.id) ? ids : [...ids, selectedAdapter.id]));
+        }}
+        onActivity={markActivity}
+      />
+    );
+  }
+
   return (
     <List
       navigationTitle={selectedAdapter?.name ?? "Password Managers"}
       searchText={searchText}
-      onSearchTextChange={setSearchText}
+      onSearchTextChange={(text) => {
+        markActivity();
+        setSearchText(text);
+      }}
       searchBarPlaceholder="Search passwords..."
       throttle
-      isLoading={isLoadingAdapters || isLoadingItems}
+      isLoading={isLoadingAdapters || (canLoadItems && isLoadingItems)}
       actions={
         selectedAdapter ? (
           <ActionPanel>
@@ -574,30 +739,28 @@ export default function SearchPasswords() {
             tooltip="Password Manager"
             storeValue={false}
             value={activeManagerId}
-            onChange={(managerId) => {
-              dropdownChangeCountRef.current += 1;
-
-              if (dropdownChangeCountRef.current === 1 && managerId !== preferredManagerId) {
-                return;
-              }
-
-              setSessionManagerId(managerId === preferredManagerId ? undefined : managerId);
-            }}
+            onChange={handleListManagerChange}
           >
             <List.Dropdown.Section title="Available">
               {availableAdapters.map((adapter) => (
                 <List.Dropdown.Item key={adapter.id} title={adapter.name} value={adapter.id} />
               ))}
             </List.Dropdown.Section>
+            {lockedAdapters.length > 0 && (
+              <List.Dropdown.Section title="Locked">
+                {lockedAdapters.map(({ adapter }) => (
+                  <List.Dropdown.Item key={adapter.id} title={adapter.name} value={adapter.id} icon={Icon.Lock} />
+                ))}
+              </List.Dropdown.Section>
+            )}
             {unavailableAdapters.length > 0 && (
               <List.Dropdown.Section title="Unavailable">
-                {unavailableAdapters.map(({ adapter, status }) => (
+                {unavailableAdapters.map(({ adapter }) => (
                   <List.Dropdown.Item
                     key={adapter.id}
                     title={adapter.name}
                     value={adapter.id}
                     icon={Icon.ExclamationMark}
-                    subtitle={status.ok ? undefined : status.reason}
                   />
                 ))}
               </List.Dropdown.Section>
@@ -637,6 +800,7 @@ export default function SearchPasswords() {
                 adapter={selectedAdapter}
                 closeAfterCopy={closeAfterCopy}
                 autoCopyTotpAfterPassword={autoCopyTotpAfterPassword}
+                onActivity={markActivity}
               />
             ) : undefined
           }

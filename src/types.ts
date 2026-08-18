@@ -18,7 +18,21 @@ export interface ItemAvailability {
   hasPassword: boolean;
 }
 
-export type AdapterStatus = { ok: true } | { ok: false; reason: string };
+export type AdapterStatus = { ok: true } | { ok: false; reason: string; needsAuth?: boolean };
+
+export type AuthFieldType = "password" | "pin" | "text";
+
+export interface AuthField {
+  id: string;
+  label: string;
+  type: AuthFieldType;
+}
+
+export interface AuthRequirements {
+  fields: AuthField[];
+}
+
+export type ExternalAdapterMode = "one-shot" | "persistent";
 
 export interface ExternalAdapterManifestFile {
   id: string;
@@ -26,6 +40,7 @@ export interface ExternalAdapterManifestFile {
   command: string;
   capabilities?: string[];
   env?: Record<string, string>;
+  mode?: ExternalAdapterMode;
 }
 
 export interface ExternalAdapterManifest extends ExternalAdapterManifestFile {
@@ -55,6 +70,9 @@ export interface PasswordManagerAdapter {
   getUrl?(item: VaultItem): Promise<string | undefined>;
   openInManager?(item: VaultItem): Promise<void>;
   getItemAvailability?(item: VaultItem): Promise<ItemAvailability>;
+
+  getAuthRequirements?(): AuthRequirements | Promise<AuthRequirements>;
+  authenticate?(credentials: Record<string, string>): Promise<AdapterStatus>;
 }
 
 export interface CliRunOptions {

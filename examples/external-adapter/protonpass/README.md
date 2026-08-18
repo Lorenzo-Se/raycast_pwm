@@ -23,9 +23,12 @@ cp -R examples/external-adapter/protonpass ~/.config/raycast-pwm/adapters/proton
 
 ```bash
 pass-cli login
+pass-cli session create-lock   # optional: 6-digit lock code for idle protection
 ```
 
 4. Open **Search Passwords** and select **Proton Pass (External)** from the manager dropdown.
+
+When the CLI session is locked, Raycast shows a **PIN** field (6 digits). Unlock uses `pass-cli session unlock`.
 
 ## CLI path override
 
@@ -59,4 +62,4 @@ protonpass-external
 
 ## Protocol
 
-See [template README](../template/README.md) for the full external adapter protocol reference.
+See [src/adapters/README.md](../../../src/adapters/README.md) for the external adapter protocol and session lifecycle.

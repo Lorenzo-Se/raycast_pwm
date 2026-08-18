@@ -8,7 +8,7 @@ Raycast-Extension mit generalisiertem CLI-Adapter-System für Password Manager. 
 - Passwort, Username und TOTP kopieren
 - Direkt einfügen in die aktive App (Paste)
 - Multi-Manager-Umschalter in der Suche
-- Template-Adapter mit Mock-Daten für Entwicklung ohne echte CLI
+- PIN-Entsperrung für Proton Pass (6-stellige Session-PIN)
 - Externe Third-Party-Adapter über konfigurierbaren Ordner
 
 ## Entwicklung
@@ -22,14 +22,14 @@ npm run dev
 
 ### Extension-Einstellungen
 
-| Einstellung | Beschreibung |
-|-------------|--------------|
-| Default Manager | Built-in-Adapter im Dropdown (oder Auto) |
-| Default Manager Override | Adapter-ID für externe Adapter als Default |
-| External Adapters Directory | Ordner mit Third-Party-Adaptern, z. B. `~/.config/raycast-pwm/adapters` |
-| CLI Path Overrides (JSON) | macOS: `{"1password": "/opt/homebrew/bin/op"}` · Windows: `{"protonpass": "%LOCALAPPDATA%\\Programs\\pass-cli\\pass-cli.exe"}` |
-| Close window after copying | Raycast nach Copy schließen |
-| Auto-copy TOTP after password action | TOTP nach 5 Sekunden automatisch kopieren |
+| Einstellung                          | Beschreibung                                                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Default Manager                      | Built-in-Adapter im Dropdown (oder Auto)                                                                                       |
+| Default Manager Override             | Adapter-ID für externe Adapter als Default                                                                                     |
+| External Adapters Directory          | Ordner mit Third-Party-Adaptern, z. B. `~/.config/raycast-pwm/adapters`                                                        |
+| CLI Path Overrides (JSON)            | macOS: `{"1password": "/opt/homebrew/bin/op"}` · Windows: `{"protonpass": "%LOCALAPPDATA%\\Programs\\pass-cli\\pass-cli.exe"}` |
+| Close window after copying           | Raycast nach Copy schließen                                                                                                    |
+| Auto-copy TOTP after password action | TOTP nach 5 Sekunden automatisch kopieren                                                                                      |
 
 ## Built-in Password Manager hinzufügen
 
@@ -47,16 +47,16 @@ Kurzversion:
 
 ```bash
 mkdir -p ~/.config/raycast-pwm/adapters
-cp -R examples/external-adapter/template ~/.config/raycast-pwm/adapters/template
+cp -R examples/external-adapter/protonpass ~/.config/raycast-pwm/adapters/protonpass
 ```
 
 2. In Raycast **External Adapters Directory** setzen: `~/.config/raycast-pwm/adapters`
 
 3. Pro Adapter einen Unterordner mit `pwm-adapter.json` + Script
 
-Vollständige Protokoll-Doku: [examples/external-adapter/template/README.md](examples/external-adapter/template/README.md)
+Protokoll und Auth: [src/adapters/README.md](src/adapters/README.md)
 
-Referenz-Adapter mit echter CLI-Integration: [examples/external-adapter/protonpass](examples/external-adapter/protonpass/README.md) (Proton Pass, parallel zum Built-in-Adapter).
+Referenz-Adapter: [examples/external-adapter/protonpass](examples/external-adapter/protonpass/README.md), [examples/external-adapter/threepass](examples/external-adapter/threepass/README.md)
 
 ## Projektstruktur
 
@@ -71,14 +71,14 @@ src/
 │   ├── index.ts           # Built-in Adapter-Liste
 │   ├── external-protocol.ts
 │   ├── external-script-adapter.ts
-│   ├── template.ts
+│   ├── protonpass.ts
 │   └── README.md
 └── utils/
     ├── cli.ts
     └── paths.ts
 
-examples/external-adapter/template/  # Referenz-Third-Party-Adapter (Mock)
-examples/external-adapter/protonpass/ # Proton Pass CLI (extern, parallel zum Built-in)
+examples/external-adapter/protonpass/  # Proton Pass CLI (extern)
+examples/external-adapter/threepass/   # ThreePass (extern, persistent + Master-PW)
 ```
 
 ## Lizenz

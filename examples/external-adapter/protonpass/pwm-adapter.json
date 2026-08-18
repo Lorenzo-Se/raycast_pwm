@@ -9,7 +9,9 @@
     "getEmail",
     "getTotp",
     "getUrl",
-    "getItemAvailability"
+    "getItemAvailability",
+    "getAuthRequirements",
+    "authenticate"
   ],
   "env": {}
 }

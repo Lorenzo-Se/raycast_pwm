@@ -1,7 +1,15 @@
 import { getCliPathOverride } from "../registry";
-import type { AdapterStatus, ItemAvailability, PasswordManagerAdapter, VaultItem } from "../types";
-import { parseJson, resolveBinary, runCli } from "../utils/cli";
+import type { AdapterStatus, AuthRequirements, ItemAvailability, PasswordManagerAdapter, VaultItem } from "../types";
+import { CliError, parseJson, resolveBinary, runCli } from "../utils/cli";
 import { filterVaultItems } from "../utils/items";
+import {
+  getPassCliInfo,
+  isLockCodePromptError,
+  isPassCliSessionLocked,
+  isValidProtonPassPin,
+  isWrongPinError,
+  unlockPassCliSession,
+} from "./protonpass-session";
 
 const ITEM_ID_SEPARATOR = "::";
 
@@ -214,26 +222,80 @@ async function loadAllItems(): Promise<VaultItem[]> {
   return results.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 }
 
+const PROTON_PASS_PIN_REQUIREMENTS: AuthRequirements = {
+  fields: [{ id: "pin", label: "PIN", type: "pin" }],
+};
+
+async function checkProtonPassAvailability(): Promise<AdapterStatus> {
+  const binary = await getBinary();
+  if (!binary) {
+    return { ok: false, reason: "pass-cli not found. Install from https://protonpass.github.io/pass-cli/" };
+  }
+
+  try {
+    await getPassCliInfo(binary);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "Not logged in. Run pass-cli login to authenticate.",
+    };
+  }
+
+  if (await isPassCliSessionLocked(binary)) {
+    return {
+      ok: false,
+      reason: "Session gesperrt. Bitte 6-stellige PIN eingeben.",
+      needsAuth: true,
+    };
+  }
+
+  return { ok: true };
+}
+
 export const protonPassAdapter: PasswordManagerAdapter = {
   id: "protonpass",
   name: "Proton Pass",
   cliBinary: "pass-cli",
 
   async isAvailable(): Promise<AdapterStatus> {
+    return checkProtonPassAvailability();
+  },
+
+  getAuthRequirements(): AuthRequirements {
+    return PROTON_PASS_PIN_REQUIREMENTS;
+  },
+
+  async authenticate(credentials: Record<string, string>): Promise<AdapterStatus> {
     const binary = await getBinary();
     if (!binary) {
       return { ok: false, reason: "pass-cli not found. Install from https://protonpass.github.io/pass-cli/" };
     }
 
-    try {
-      await runCli(binary, ["info"]);
-      return { ok: true };
-    } catch (error) {
-      return {
-        ok: false,
-        reason: error instanceof Error ? error.message : "Not logged in. Run pass-cli login to authenticate.",
-      };
+    const pin = credentials.pin ?? "";
+    if (!isValidProtonPassPin(pin)) {
+      return { ok: false, reason: "PIN muss 6 Ziffern haben.", needsAuth: true };
     }
+
+    try {
+      await unlockPassCliSession(binary, pin);
+    } catch (error) {
+      const message = error instanceof CliError ? error.message : String(error);
+      if (message === "PIN falsch." || isWrongPinError(message)) {
+        return { ok: false, reason: "PIN falsch.", needsAuth: true };
+      }
+
+      if (isLockCodePromptError(message)) {
+        return {
+          ok: false,
+          reason: "PIN-Eingabe nicht möglich. Entsperre die Session im Terminal mit: pass-cli session unlock",
+          needsAuth: true,
+        };
+      }
+
+      return { ok: false, reason: message, needsAuth: true };
+    }
+
+    return { ok: true };
   },
 
   async listItems(): Promise<VaultItem[]> {
@@ -288,7 +350,7 @@ export const protonPassAdapter: PasswordManagerAdapter = {
   async getItemAvailability(item: VaultItem): Promise<ItemAvailability> {
     const { shareId, itemId } = parseItemId(item.id);
     const [url, email, username, totp, password] = await Promise.all([
-      protonPassAdapter.getUrl(item),
+      protonPassAdapter.getUrl?.(item) ?? viewFieldSafe(shareId, itemId, "url"),
       protonPassAdapter.getEmail(item).catch(() => undefined),
       protonPassAdapter.getUsername(item).catch(() => undefined),
       viewFieldSafe(shareId, itemId, "totp"),

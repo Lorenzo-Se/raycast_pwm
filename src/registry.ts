@@ -5,6 +5,14 @@ import { loadExternalAdapters } from "./registry/load-external-adapters";
 import type { AdapterStatus, CliPathOverrides, PasswordManagerAdapter } from "./types";
 import { resolveBinary } from "./utils/cli";
 
+export function adapterNeedsAuth(status: AdapterStatus): boolean {
+  return status.ok === false && status.needsAuth === true;
+}
+
+export function isAdapterSelectable(status: AdapterStatus): boolean {
+  return status.ok === true || adapterNeedsAuth(status);
+}
+
 let adapterCache: PasswordManagerAdapter[] | undefined;
 
 export async function loadAdapters(): Promise<PasswordManagerAdapter[]> {
@@ -72,7 +80,7 @@ export async function checkAdapterAvailability(adapter: PasswordManagerAdapter):
   const customPath = getCliPathOverride(adapter.id);
   const binary = await resolveBinary(adapter.cliBinary, customPath);
 
-  if (!binary && adapter.id !== "template") {
+  if (!binary) {
     const hint = customPath
       ? `Configured path not found: ${customPath}`
       : `CLI "${adapter.cliBinary}" not found. Set path in extension preferences.`;

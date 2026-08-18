@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const { existsSync } = require("fs");
 const { homedir, platform } = require("os");
+const readline = require("readline");
 const { join } = require("path");
 const { promisify } = require("util");
 
@@ -12,6 +13,11 @@ const ADAPTER_ID = "protonpass-external";
 const CLI_BINARY = "pass-cli";
 const ITEM_ID_SEPARATOR = "::";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const SESSION_LOCKED_PATTERN = /session is locked/i;
+const LOCK_CODE_READ_ERROR_PATTERN =
+  /reading lock code|prompting for password|device not configured|operation not supported on socket/i;
+const UNLOCK_PROMPT_DELAY_MS = 1_000;
+const PIN_PATTERN = /^\d{6}$/;
 const isWindows = platform() === "win32";
 
 function getSearchPaths() {
@@ -77,31 +83,113 @@ async function findInPath(name) {
   return undefined;
 }
 
-function readRequest() {
-  return new Promise((resolve, reject) => {
-    let input = "";
+function sendSuccess(result, id) {
+  const payload = { ok: true, result };
+  if (id !== undefined) {
+    payload.id = id;
+  }
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
 
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      input += chunk;
+function sendError(message, id) {
+  const payload = { ok: false, error: { message } };
+  if (id !== undefined) {
+    payload.id = id;
+  }
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function isValidPin(pin) {
+  return PIN_PATTERN.test(String(pin ?? "").trim());
+}
+
+function isSessionLockedMessage(message) {
+  return SESSION_LOCKED_PATTERN.test(String(message));
+}
+
+function isLockCodePromptError(message) {
+  return LOCK_CODE_READ_ERROR_PATTERN.test(String(message));
+}
+
+function isWrongPinError(message) {
+  if (isLockCodePromptError(message)) {
+    return false;
+  }
+
+  return /SessionLocked/i.test(String(message)) || /unlock.*session/i.test(String(message));
+}
+
+async function runShellCommand(command, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["-c", command], {
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    process.stdin.on("end", () => {
-      try {
-        resolve(JSON.parse(input));
-      } catch (error) {
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill();
+        reject(new Error(`CLI timed out after ${DEFAULT_TIMEOUT_MS}ms`));
+      }
+    }, DEFAULT_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
         reject(error);
       }
     });
-    process.stdin.on("error", reject);
+
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+
+      if (code !== 0 && !stdout.trim()) {
+        reject(new Error(stderr.trim() || `CLI exited with code ${code ?? "unknown"}`));
+        return;
+      }
+
+      resolve(stdout.trim());
+    });
   });
 }
 
-function sendSuccess(result) {
-  process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
-}
+async function runUnlockCommand(binary, pin) {
+  if (platform() === "darwin" || platform() === "linux") {
+    const delaySeconds = UNLOCK_PROMPT_DELAY_MS / 1_000;
+    const command =
+      platform() === "darwin"
+        ? `(sleep ${delaySeconds}; printf '%s\\n' "$PASS_CLI_PIN") | script -q /dev/null "$PASS_CLI_BIN" session unlock`
+        : `(sleep ${delaySeconds}; printf '%s\\n' "$PASS_CLI_PIN") | script -q -c "$PASS_CLI_BIN session unlock" /dev/null`;
 
-function sendError(message) {
-  process.stdout.write(`${JSON.stringify({ ok: false, error: { message } })}\n`);
+    await runShellCommand(command, {
+      PASS_CLI_BIN: binary,
+      PASS_CLI_PIN: pin,
+    });
+    return;
+  }
+
+  throw new Error(
+    "PIN-Entsperrung ist auf dieser Plattform nicht automatisiert. Führe im Terminal aus: pass-cli session unlock",
+  );
 }
 
 async function resolveBinary() {
@@ -328,6 +416,33 @@ function filterVaultItems(items, query) {
   return filtered.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
 }
 
+async function getPassCliInfo(binary) {
+  const stdout = await runCli(binary, ["info", "--output", "json"]);
+  return parseJson(stdout);
+}
+
+async function isPassCliSessionLocked(binary) {
+  try {
+    await runCli(binary, ["vault", "list", "--output", "json"]);
+    return false;
+  } catch (error) {
+    return isSessionLockedMessage(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function unlockPassCliSession(binary, pin) {
+  const normalizedPin = String(pin ?? "").trim();
+  if (!isValidPin(normalizedPin)) {
+    throw new Error("PIN muss 6 Ziffern haben.");
+  }
+
+  await runUnlockCommand(binary, normalizedPin);
+
+  if (await isPassCliSessionLocked(binary)) {
+    throw new Error("PIN falsch.");
+  }
+}
+
 async function checkAvailability() {
   const binary = await getBinary();
   if (!binary) {
@@ -338,13 +453,64 @@ async function checkAvailability() {
   }
 
   try {
-    await runCli(binary, ["info"]);
-    return { ok: true };
+    await getPassCliInfo(binary);
   } catch (error) {
     return {
       ok: false,
       reason: error instanceof Error ? error.message : "Not logged in. Run pass-cli login to authenticate.",
     };
+  }
+
+  if (await isPassCliSessionLocked(binary)) {
+    return {
+      ok: false,
+      reason: "Session gesperrt. Bitte 6-stellige PIN eingeben.",
+      needsAuth: true,
+    };
+  }
+
+  return { ok: true };
+}
+
+function getAuthRequirements() {
+  return {
+    requirements: {
+      fields: [{ id: "pin", label: "PIN", type: "pin" }],
+    },
+  };
+}
+
+async function authenticate(params) {
+  const binary = await getBinary();
+  if (!binary) {
+    return { status: { ok: false, reason: "pass-cli not found. Install from https://protonpass.github.io/pass-cli/" } };
+  }
+
+  const pin = params?.credentials?.pin ?? "";
+  if (!isValidPin(pin)) {
+    return { status: { ok: false, reason: "PIN muss 6 Ziffern haben.", needsAuth: true } };
+  }
+
+  try {
+    await unlockPassCliSession(binary, pin);
+    return { status: { ok: true } };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "PIN falsch." || isWrongPinError(message)) {
+      return { status: { ok: false, reason: "PIN falsch.", needsAuth: true } };
+    }
+
+    if (isLockCodePromptError(message)) {
+      return {
+        status: {
+          ok: false,
+          reason: "PIN-Eingabe nicht möglich. Entsperre die Session im Terminal mit: pass-cli session unlock",
+          needsAuth: true,
+        },
+      };
+    }
+
+    return { status: { ok: false, reason: message, needsAuth: true } };
   }
 }
 
@@ -376,6 +542,12 @@ async function handleRequest(request) {
   switch (request.method) {
     case "isAvailable":
       return { status: await checkAvailability() };
+
+    case "getAuthRequirements":
+      return getAuthRequirements();
+
+    case "authenticate":
+      return await authenticate(request.params);
 
     case "listItems":
       return { items: await loadAllItems() };
@@ -437,15 +609,38 @@ async function handleRequest(request) {
   }
 }
 
-async function main() {
-  try {
-    const request = await readRequest();
-    const result = await handleRequest(request);
-    sendSuccess(result);
-  } catch (error) {
-    sendError(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+async function handleLine(line) {
+  if (!String(line).trim()) {
+    return;
   }
+
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch {
+    sendError("Invalid JSON request");
+    return;
+  }
+
+  try {
+    const result = await handleRequest(request);
+    sendSuccess(result, request.id);
+  } catch (error) {
+    sendError(error instanceof Error ? error.message : String(error), request.id);
+  }
+}
+
+function main() {
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  let queue = Promise.resolve();
+
+  rl.on("line", (line) => {
+    queue = queue.then(() => handleLine(line)).catch(() => undefined);
+  });
+
+  rl.on("close", () => {
+    queue.finally(() => process.exit(process.exitCode ?? 0));
+  });
 }
 
 main();

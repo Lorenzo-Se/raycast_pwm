@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 
-import type { AdapterStatus, ItemAvailability, VaultItem } from "../types";
+import type { AdapterStatus, AuthFieldType, AuthRequirements, ItemAvailability, VaultItem } from "../types";
 
 export const EXTERNAL_PROTOCOL_VERSION = 1;
 export const EXTERNAL_ADAPTER_TIMEOUT_MS = 30_000;
@@ -17,27 +17,42 @@ export const EXTERNAL_ADAPTER_METHODS = [
   "getUrl",
   "getItemAvailability",
   "openInManager",
+  "getAuthRequirements",
+  "authenticate",
+  "lockSession",
 ] as const;
 
 export type ExternalAdapterMethod = (typeof EXTERNAL_ADAPTER_METHODS)[number];
 
-export const OPTIONAL_EXTERNAL_CAPABILITIES = ["listItems", "getUrl", "openInManager", "getItemAvailability"] as const;
+export const OPTIONAL_EXTERNAL_CAPABILITIES = [
+  "listItems",
+  "getUrl",
+  "openInManager",
+  "getItemAvailability",
+  "getAuthRequirements",
+  "authenticate",
+] as const;
+
+export const STATELESS_EXTERNAL_METHODS: readonly ExternalAdapterMethod[] = ["isAvailable", "getAuthRequirements"];
 
 export type OptionalExternalCapability = (typeof OPTIONAL_EXTERNAL_CAPABILITIES)[number];
 
 export interface ExternalAdapterRequest {
   protocolVersion: number;
+  id?: string;
   method: ExternalAdapterMethod;
   params?: Record<string, unknown>;
 }
 
 export interface ExternalAdapterSuccessResponse {
   ok: true;
+  id?: string;
   result: unknown;
 }
 
 export interface ExternalAdapterErrorResponse {
   ok: false;
+  id?: string;
   error: { message: string };
 }
 
@@ -69,6 +84,26 @@ export class ExternalAdapterError extends Error {
   }
 }
 
+export function parseExternalMessage(line: string): ExternalAdapterResponse {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    throw new ExternalAdapterError("External adapter returned empty output");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new ExternalAdapterError(`External adapter returned invalid JSON: ${trimmed.slice(0, 200)}`);
+  }
+
+  if (typeof parsed !== "object" || parsed === null || !("ok" in parsed)) {
+    throw new ExternalAdapterError("External adapter response must include an ok field");
+  }
+
+  return parsed as ExternalAdapterResponse;
+}
+
 export function parseExternalResponse(stdout: string): ExternalAdapterSuccessResponse {
   const trimmed = stdout.trim();
   if (!trimmed) {
@@ -80,18 +115,7 @@ export function parseExternalResponse(stdout: string): ExternalAdapterSuccessRes
     throw new ExternalAdapterError(`External adapter returned non-JSON output: ${trimmed.slice(0, 200)}`);
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line) as unknown;
-  } catch {
-    throw new ExternalAdapterError(`External adapter returned invalid JSON: ${line.slice(0, 200)}`);
-  }
-
-  if (typeof parsed !== "object" || parsed === null || !("ok" in parsed)) {
-    throw new ExternalAdapterError("External adapter response must include an ok field");
-  }
-
-  const response = parsed as ExternalAdapterResponse;
+  const response = parseExternalMessage(line);
   if (!response.ok) {
     const message =
       "error" in response && typeof response.error?.message === "string"
@@ -210,10 +234,39 @@ export function assertIsAvailableResult(result: unknown): AdapterStatus {
   }
 
   if (status.ok === false && typeof status.reason === "string") {
-    return { ok: false, reason: status.reason };
+    return {
+      ok: false,
+      reason: status.reason,
+      ...(status.needsAuth === true ? { needsAuth: true } : {}),
+    };
   }
 
   throw new ExternalAdapterError("isAvailable status must be { ok: true } or { ok: false, reason: string }");
+}
+
+const AUTH_FIELD_TYPES: readonly AuthFieldType[] = ["password", "pin", "text"];
+
+export function assertAuthRequirementsResult(result: unknown): AuthRequirements {
+  if (typeof result !== "object" || result === null || !("requirements" in result)) {
+    throw new ExternalAdapterError("getAuthRequirements result must include a requirements object");
+  }
+
+  const requirements = (result as { requirements: AuthRequirements }).requirements;
+  if (typeof requirements !== "object" || requirements === null || !Array.isArray(requirements.fields)) {
+    throw new ExternalAdapterError("requirements.fields must be an array");
+  }
+
+  for (const field of requirements.fields) {
+    if (!field || typeof field.id !== "string" || typeof field.label !== "string") {
+      throw new ExternalAdapterError("Each auth field must include id and label strings");
+    }
+
+    if (!AUTH_FIELD_TYPES.includes(field.type)) {
+      throw new ExternalAdapterError(`Unsupported auth field type: ${String(field.type)}`);
+    }
+  }
+
+  return requirements;
 }
 
 export function assertItemsResult(result: unknown): VaultItem[] {

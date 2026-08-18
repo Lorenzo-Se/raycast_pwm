@@ -33,10 +33,6 @@
           "value": "auto"
         },
         {
-          "title": "Template (Mock)",
-          "value": "template"
-        },
-        {
           "title": "Proton Pass",
           "value": "protonpass"
         }
@@ -87,6 +83,15 @@
       "default": false,
       "label": "Auto-copy TOTP after password action",
       "description": "After copying or pasting a password, automatically copy the TOTP code after 5 seconds."
+    },
+    {
+      "name": "sessionTimeoutMinutes",
+      "type": "textfield",
+      "required": false,
+      "title": "Session timeout (minutes)",
+      "description": "Lock the adapter session after this many minutes of inactivity. Range 1–1440.",
+      "default": "15",
+      "placeholder": "15"
     }
   ],
   "dependencies": {

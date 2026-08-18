@@ -64,7 +64,7 @@ export const onePasswordAdapter: PasswordManagerAdapter = {
 };
 ```
 
-Siehe `template.ts` für Mock-Implementierung und CLI-Referenztabelle.
+Siehe `protonpass.ts` für eine vollständige CLI-Implementierung und Referenztabelle.
 
 ### 2. In der Registry registrieren
 
@@ -73,7 +73,7 @@ In `src/adapters/index.ts` importieren und zur Liste hinzufügen:
 ```typescript
 import { onePasswordAdapter } from "./1password";
 
-export const adapters: PasswordManagerAdapter[] = [templateAdapter, onePasswordAdapter];
+export const adapters: PasswordManagerAdapter[] = [protonPassAdapter, onePasswordAdapter];
 ```
 
 ### 3. CLI-Pfad konfigurieren (optional)
@@ -92,17 +92,19 @@ Beim Hinzufügen eines neuen Adapters `npm run sync-preferences` ausführen, dam
 
 ## Interface-Übersicht
 
-| Methode                | Zweck                                                                                   |
-| ---------------------- | --------------------------------------------------------------------------------------- |
-| `isAvailable()`        | CLI installiert und Session/Auth gültig?                                                |
-| `listItems?()`         | Volle Item-Liste (empfohlen bei vollem Vault-Load; UI cached pro Session)               |
-| `searchItems(query)`   | Einträge suchen/listen (für serverseitige Suche oder als Fallback ohne `listItems`)     |
-| `getPassword(item)`    | Passwort für Item-ID holen                                                              |
-| `getUsername(item)`    | Username holen (optional)                                                               |
-| `getEmail(item)`       | E-Mail holen (optional)                                                                 |
-| `getTotp(item)`        | TOTP-Code holen (optional)                                                              |
-| `getUrl?(item)`        | Website-URL holen (optional)                                                            |
-| `openInManager?(item)` | Item im Password-Manager öffnen (optional, adapter-spezifisch; z.B. 1Password Deeplink) |
+| Methode                      | Zweck                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------- |
+| `isAvailable()`              | CLI installiert und Session/Auth gültig?                                                |
+| `listItems?()`               | Volle Item-Liste (empfohlen bei vollem Vault-Load; UI cached pro Session)               |
+| `searchItems(query)`         | Einträge suchen/listen (für serverseitige Suche oder als Fallback ohne `listItems`)     |
+| `getPassword(item)`          | Passwort für Item-ID holen                                                              |
+| `getUsername(item)`          | Username holen (optional)                                                               |
+| `getEmail(item)`             | E-Mail holen (optional)                                                                 |
+| `getTotp(item)`              | TOTP-Code holen (optional)                                                              |
+| `getUrl?(item)`              | Website-URL holen (optional)                                                            |
+| `openInManager?(item)`       | Item im Password-Manager öffnen (optional, adapter-spezifisch; z.B. 1Password Deeplink) |
+| `getAuthRequirements?()`     | Felder für das Entsperr-Formular (optional; Master-Passwort / PIN)                      |
+| `authenticate?(credentials)` | Session entsperren (optional)                                                           |
 
 ## CLI-Hilfen
 
@@ -131,7 +133,7 @@ Beispiel:
     adapter.js
 ```
 
-Referenz: [`examples/external-adapter/template`](../../examples/external-adapter/template/README.md) (Mock), [`examples/external-adapter/protonpass`](../../examples/external-adapter/protonpass/README.md) (Proton Pass CLI)
+Referenz: [`examples/external-adapter/protonpass`](../../examples/external-adapter/protonpass/README.md), [`examples/external-adapter/threepass`](../../examples/external-adapter/threepass/README.md)
 
 ### Manifest (`pwm-adapter.json`)
 
@@ -140,13 +142,29 @@ Referenz: [`examples/external-adapter/template`](../../examples/external-adapter
   "id": "my-adapter",
   "name": "My Password Manager",
   "command": "./adapter.js",
-  "capabilities": ["listItems", "getUrl", "getItemAvailability"]
+  "mode": "persistent",
+  "capabilities": ["listItems", "getUrl", "getItemAvailability", "getAuthRequirements", "authenticate"]
 }
 ```
+
+`mode` is optional (`one-shot` default). Persistent adapters keep a helper process open while Search Passwords is visible.
 
 `capabilities` steuert optionale Methoden. Immer verfügbar über das Protokoll:
 
 - `isAvailable`, `searchItems`, `getPassword`, `getUsername`, `getEmail`, `getTotp`
+
+Auth (optional):
+
+- `getAuthRequirements` — Felder für das Entsperr-Formular (`password`, `pin`, `text`)
+- `authenticate` — Credentials nur im Helfer-RAM speichern
+- `isAvailable` mit `{ ok: false, reason, needsAuth: true }` wenn Setup ok, aber Unlock nötig
+
+Session:
+
+- Escape / Fenster schließen beendet den Helfer
+- Preference **Session timeout (minutes)** (Default 15) sperrt nach Inaktivität erneut
+
+Vollständige Protokollreferenz: Abschnitt **Externe Adapter** in dieser Datei; Beispiele unter `examples/external-adapter/`.
 
 ### Sicherheit
 
