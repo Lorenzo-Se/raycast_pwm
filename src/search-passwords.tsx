@@ -484,18 +484,35 @@ export default function SearchPasswords() {
   const closeAfterCopy = preferences.closeAfterCopy ?? true;
   const autoCopyTotpAfterPassword = preferences.autoCopyTotpAfterPassword ?? false;
 
-  const { data: adapterStatuses, isLoading: isLoadingAdapters } = usePromise(getAvailableAdapters);
+  const {
+    data: adapterStatuses,
+    isLoading: isLoadingAdapters,
+    revalidate: revalidateAdapterStatuses,
+  } = usePromise(getAvailableAdapters);
 
   const allAdapters = useMemo(() => adapterStatuses?.map((entry) => entry.adapter) ?? [], [adapterStatuses]);
 
+  const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
+  const [unlockedIds, setUnlockedIds] = useState<string[]>([]);
+  const [hasUnlockedThisMount, setHasUnlockedThisMount] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const dropdownChangeCountRef = useRef(0);
+  const lastActivityRef = useRef(Date.now());
+  const previousManagerIdRef = useRef<string | undefined>(undefined);
+
   const availableAdapters = useMemo(
-    () => adapterStatuses?.filter((entry) => entry.status.ok).map((entry) => entry.adapter) ?? [],
-    [adapterStatuses],
+    () =>
+      adapterStatuses
+        ?.filter((entry) => entry.status.ok || unlockedIds.includes(entry.adapter.id))
+        .map((entry) => entry.adapter) ?? [],
+    [adapterStatuses, unlockedIds],
   );
 
   const lockedAdapters = useMemo(
-    () => adapterStatuses?.filter((entry) => adapterNeedsAuth(entry.status)) ?? [],
-    [adapterStatuses],
+    () =>
+      adapterStatuses?.filter((entry) => adapterNeedsAuth(entry.status) && !unlockedIds.includes(entry.adapter.id)) ??
+      [],
+    [adapterStatuses, unlockedIds],
   );
 
   const unavailableAdapters = useMemo(
@@ -513,14 +530,6 @@ export default function SearchPasswords() {
     const preferred = override || preferences.defaultManagerId;
     return resolveManagerId(preferred, selectableAdapters, allAdapters);
   }, [allAdapters, selectableAdapters, preferences.defaultManagerId, preferences.defaultManagerOverride]);
-
-  const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
-  const [unlockedIds, setUnlockedIds] = useState<string[]>([]);
-  const [hasUnlockedThisMount, setHasUnlockedThisMount] = useState(false);
-  const [searchText, setSearchText] = useState("");
-  const dropdownChangeCountRef = useRef(0);
-  const lastActivityRef = useRef(Date.now());
-  const previousManagerIdRef = useRef<string | undefined>(undefined);
 
   function markActivity(): void {
     lastActivityRef.current = Date.now();
@@ -667,6 +676,7 @@ export default function SearchPasswords() {
     markActivity();
     await disposeSession(activeManagerId);
     setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
+    void revalidateAdapterStatuses();
   }
 
   function handleListManagerChange(managerId: string): void {
@@ -728,6 +738,7 @@ export default function SearchPasswords() {
           markActivity();
           setHasUnlockedThisMount(true);
           setUnlockedIds((ids) => (ids.includes(selectedAdapter.id) ? ids : [...ids, selectedAdapter.id]));
+          void revalidateAdapterStatuses();
         }}
         onActivity={markActivity}
       />
