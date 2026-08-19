@@ -85,29 +85,29 @@
       "description": "After copying or pasting a password, automatically copy the TOTP code after 5 seconds."
     },
     {
+      "name": "enableExtensionSession",
+      "type": "checkbox",
+      "required": false,
+      "default": true,
+      "label": "Enable extension session",
+      "description": "Use a dedicated extension session. Password managers are re-unlocked automatically until the session expires or Raycast quits."
+    },
+    {
       "name": "sessionTimeoutMinutes",
       "type": "textfield",
       "required": false,
       "title": "Session timeout (minutes)",
-      "description": "Lock the adapter session after this many minutes of inactivity. Range 1–1440.",
+      "description": "Lock after this many minutes of inactivity (1–1440). With extension session: unlock with Touch ID to resume. Without: unlock the password manager again.",
       "default": "15",
       "placeholder": "15"
     },
     {
-      "name": "enableTouchIdReauth",
+      "name": "persistCredentialsInKeychain",
       "type": "checkbox",
       "required": false,
       "default": false,
-      "label": "Enable Touch ID for re-unlock",
-      "description": "macOS only. Stores credentials encrypted in Keychain for biometric re-unlock on this device (Touch ID, Apple Watch, or device passcode)."
-    },
-    {
-      "name": "touchIdOnlyForReauth",
-      "type": "checkbox",
-      "required": false,
-      "default": true,
-      "label": "Touch ID only after timeout",
-      "description": "macOS only. When enabled, Touch ID is never used for the first unlock after opening Search Passwords — only after a session timeout or Lock."
+      "label": "Remember in Keychain",
+      "description": "macOS only. Store credentials in Keychain so you can unlock with Touch ID after Raycast restarts. When off, credentials live only until Raycast quits."
     }
   ],
   "dependencies": {

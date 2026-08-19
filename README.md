@@ -10,7 +10,7 @@ Raycast-Extension mit generalisiertem CLI-Adapter-System für Password Manager. 
 - Multi-Manager-Umschalter in der Suche
 - PIN-Entsperrung für Proton Pass (6-stellige Session-PIN)
 - Externe Third-Party-Adapter über konfigurierbaren Ordner
-- Touch ID / Apple Watch / Gerätecode für erneutes Entsperren nach Timeout (macOS, lokal/dev)
+- Touch ID / Apple Watch / Gerätecode für die Extension-Session nach Timeout (macOS, lokal/dev)
 
 ## Entwicklung
 
@@ -35,9 +35,9 @@ Der Raycast Store lehnt Keychain-Zugriff ab — Touch-ID-Re-Auth ist für lokale
 | CLI Path Overrides (JSON)            | macOS: `{"1password": "/opt/homebrew/bin/op"}` · Windows: `{"protonpass": "%LOCALAPPDATA%\\Programs\\pass-cli\\pass-cli.exe"}` |
 | Close window after copying           | Raycast nach Copy schließen                                                                                                    |
 | Auto-copy TOTP after password action | TOTP nach 5 Sekunden automatisch kopieren                                                                                      |
-| Session timeout (minutes)            | Idle-Lock nach 1–1440 Minuten (Default 15)                                                                                     |
-| Enable Touch ID for re-unlock        | macOS: Credentials verschlüsselt in der Keychain für biometrisches Re-Unlock auf diesem Gerät (Default aus)                    |
-| Touch ID only after timeout          | macOS: Touch ID nicht beim ersten Unlock nach Öffnen, nur nach Timeout oder Lock (Default an)                                  |
+| Session timeout (minutes)            | Idle-Lock nach 1–1440 Minuten (Default 15). Mit Extension-Session: Touch ID. Ohne: Password Manager erneut entsperren          |
+| Enable extension session             | Eigene Raycast-Session: Master-PW/PIN im Prozess-RAM, stilles Re-Unlock der Manager bis Timeout oder Raycast-Quit (Default an) |
+| Remember in Keychain                 | macOS: Credentials in der Keychain, damit Touch ID auch nach einem Raycast-Neustart geht (Default aus)                         |
 
 ## Built-in Password Manager hinzufügen
 
@@ -83,8 +83,11 @@ src/
 │   ├── protonpass.ts
 │   └── README.md
 └── utils/
+    ├── adapter-auto-unlock.ts
     ├── biometric-auth.ts
     ├── cli.ts
+    ├── credential-vault.ts
+    ├── items.ts
     └── paths.ts
 
 swift/BiometricAuth/                   # Touch ID + Keychain CLI (macOS, swiftc)

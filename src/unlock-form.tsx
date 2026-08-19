@@ -7,19 +7,30 @@ import { adapterNeedsAuth } from "./registry";
 import type { AdapterStatus, AuthRequirements, PasswordManagerAdapter } from "./types";
 import {
   clearStoredCredentials,
+  confirmPresence,
   hasStoredCredentials,
   isTouchIdAvailable,
   storeCredentialsForTouchId,
   unlockWithTouchId,
 } from "./utils/biometric-auth";
+import {
+  clearRememberedCredentials,
+  getExtensionSessionState,
+  hasRememberedCredentials,
+  isExtensionSessionEnabled,
+  isKeychainPersistEnabled,
+  peekCredentials,
+  rememberCredentials,
+  unlockExtensionSessionAfterPresence,
+} from "./utils/credential-vault";
 
 const FALLBACK_REQUIREMENTS: AuthRequirements = {
   fields: [{ id: "password", label: "Passwort", type: "password" }],
 };
 
-type TouchIdPreferences = {
-  enableTouchIdReauth?: boolean;
-  touchIdOnlyForReauth?: boolean;
+type SessionPreferences = {
+  enableExtensionSession?: boolean;
+  persistCredentialsInKeychain?: boolean;
 };
 
 export function UnlockForm({
@@ -27,7 +38,6 @@ export function UnlockForm({
   adapterStatuses,
   activeManagerId,
   preferredManagerId,
-  isReauth,
   onManagerChange,
   onUnlocked,
   onActivity,
@@ -36,15 +46,15 @@ export function UnlockForm({
   adapterStatuses: Array<{ adapter: PasswordManagerAdapter; status: AdapterStatus }>;
   activeManagerId: string;
   preferredManagerId?: string;
-  isReauth: boolean;
   onManagerChange: (managerId: string) => void;
   onUnlocked: () => void;
   onActivity: () => void;
 }) {
-  const preferences = getPreferenceValues<TouchIdPreferences>();
-  const enableTouchIdReauth = preferences.enableTouchIdReauth === true;
-  const touchIdOnlyForReauth = preferences.touchIdOnlyForReauth !== false;
+  const preferences = getPreferenceValues<SessionPreferences>();
+  const sessionEnabled = preferences.enableExtensionSession !== false;
+  const persistInKeychain = preferences.persistCredentialsInKeychain === true;
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
   const autoPromptedRef = useRef(false);
 
   const { data: requirements, isLoading: isLoadingRequirements } = usePromise(
@@ -64,25 +74,35 @@ export function UnlockForm({
     [adapter.id],
   );
 
+  const sessionState = getExtensionSessionState();
+  const ramStored = hasRememberedCredentials(adapter.id);
+  const presenceUnlock = sessionEnabled && sessionState === "locked" && ramStored;
+
   const {
     data: touchIdState,
     isLoading: isLoadingTouchId,
     revalidate: revalidateTouchId,
   } = usePromise(
-    async (adapterId: string, enabled: boolean, reauth: boolean, onlyForReauth: boolean) => {
-      if (!enabled) {
-        return { available: false, stored: false, eligible: false };
+    async (adapterId: string, persist: boolean, usePresence: boolean, epoch: number) => {
+      void epoch;
+      const available = await isTouchIdAvailable();
+      if (usePresence) {
+        return { available, stored: ramStored, eligible: available, mode: "presence" as const };
       }
 
-      const available = await isTouchIdAvailable();
+      if (!persist) {
+        return { available, stored: false, eligible: false, mode: "keychain" as const };
+      }
+
       const stored = available ? await hasStoredCredentials(adapterId) : false;
       return {
         available,
         stored,
-        eligible: available && stored && (!onlyForReauth || reauth),
+        eligible: available && stored,
+        mode: "keychain" as const,
       };
     },
-    [adapter.id, enableTouchIdReauth, isReauth, touchIdOnlyForReauth],
+    [adapter.id, persistInKeychain, presenceUnlock, sessionEpoch],
   );
 
   const fields = requirements?.fields ?? FALLBACK_REQUIREMENTS.fields;
@@ -90,11 +110,11 @@ export function UnlockForm({
   const lockedAdapters = adapterStatuses.filter((entry) => adapterNeedsAuth(entry.status));
   const unavailableAdapters = adapterStatuses.filter((entry) => !entry.status.ok && !adapterNeedsAuth(entry.status));
   const touchIdEligible = touchIdState?.eligible === true;
-  const unlockWithStoredCredentialsRef = useRef<() => Promise<void>>(async () => undefined);
+  const unlockWithBiometricsRef = useRef<() => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     autoPromptedRef.current = false;
-  }, [adapter.id]);
+  }, [adapter.id, presenceUnlock]);
 
   useEffect(() => {
     if (!touchIdEligible || isSubmitting || autoPromptedRef.current || isBiometricUnlockInProgress()) {
@@ -102,11 +122,15 @@ export function UnlockForm({
     }
 
     autoPromptedRef.current = true;
-    void unlockWithStoredCredentialsRef.current();
+    void unlockWithBiometricsRef.current();
   }, [touchIdEligible, adapter.id, isSubmitting]);
 
   async function persistCredentialsAfterUnlock(credentials: Record<string, string>): Promise<void> {
-    if (!enableTouchIdReauth) {
+    if (isExtensionSessionEnabled()) {
+      rememberCredentials(adapter.id, credentials);
+    }
+
+    if (!isKeychainPersistEnabled()) {
       try {
         await clearStoredCredentials(adapter.id);
       } catch {
@@ -121,12 +145,32 @@ export function UnlockForm({
       await showToast({
         style: Toast.Style.Failure,
         title: "Touch ID save failed",
-        message: error instanceof Error ? error.message : "Session is unlocked. Retry Touch ID setup later.",
+        message: error instanceof Error ? error.message : "Session is unlocked. Retry Keychain setup later.",
       });
     }
   }
 
-  async function unlockWithStoredCredentials(): Promise<void> {
+  async function authenticateWithCredentials(credentials: Record<string, string>): Promise<boolean> {
+    if (!adapter.authenticate) {
+      return false;
+    }
+
+    const status = await adapter.authenticate(credentials);
+    if (status.ok) {
+      await persistCredentialsAfterUnlock(credentials);
+      onUnlocked();
+      return true;
+    }
+
+    await showToast({
+      style: Toast.Style.Failure,
+      title: "Unlock failed",
+      message: status.reason,
+    });
+    return false;
+  }
+
+  async function unlockWithBiometrics(): Promise<void> {
     if (!adapter.authenticate || isSubmitting) {
       return;
     }
@@ -136,24 +180,45 @@ export function UnlockForm({
     setBiometricUnlockInProgress(true);
 
     try {
+      if (presenceUnlock) {
+        const confirmed = await confirmPresence();
+        if (!confirmed) {
+          return;
+        }
+
+        unlockExtensionSessionAfterPresence();
+        setSessionEpoch((value) => value + 1);
+
+        const credentials = peekCredentials(adapter.id);
+        if (!credentials) {
+          return;
+        }
+
+        const status = await adapter.isAvailable();
+        if (status.ok) {
+          onUnlocked();
+          return;
+        }
+
+        clearRememberedCredentials(adapter.id);
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Unlock failed",
+          message: status.reason,
+        });
+        return;
+      }
+
       const credentials = await unlockWithTouchId(adapter.id);
       if (!credentials) {
         return;
       }
 
-      const status = await adapter.authenticate(credentials);
-      if (status.ok) {
-        onUnlocked();
-        return;
+      const unlocked = await authenticateWithCredentials(credentials);
+      if (!unlocked) {
+        await clearStoredCredentials(adapter.id);
+        await revalidateTouchId();
       }
-
-      await clearStoredCredentials(adapter.id);
-      await revalidateTouchId();
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Unlock failed",
-        message: status.reason,
-      });
     } catch (error) {
       await showToast({
         style: Toast.Style.Failure,
@@ -166,7 +231,7 @@ export function UnlockForm({
     }
   }
 
-  unlockWithStoredCredentialsRef.current = unlockWithStoredCredentials;
+  unlockWithBiometricsRef.current = unlockWithBiometrics;
 
   async function handleSubmit(values: Record<string, string>): Promise<void> {
     if (!adapter.authenticate) {
@@ -187,18 +252,7 @@ export function UnlockForm({
     }
 
     try {
-      const status = await adapter.authenticate(credentials);
-      if (status.ok) {
-        await persistCredentialsAfterUnlock(credentials);
-        onUnlocked();
-        return;
-      }
-
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Unlock failed",
-        message: status.reason,
-      });
+      await authenticateWithCredentials(credentials);
     } catch (error) {
       await showToast({
         style: Toast.Style.Failure,
@@ -231,14 +285,14 @@ export function UnlockForm({
       actions={
         <ActionPanel>
           {touchIdEligible ? (
-            <Action title="Unlock with Touch ID" icon={Icon.Fingerprint} onAction={unlockWithStoredCredentials} />
+            <Action title="Unlock with Touch ID" icon={Icon.Fingerprint} onAction={unlockWithBiometrics} />
           ) : null}
           <Action.SubmitForm
             title={touchIdEligible ? "Enter Password/PIN" : "Unlock"}
             icon={Icon.LockUnlocked}
             onSubmit={handleSubmit}
           />
-          {enableTouchIdReauth && touchIdState?.stored ? (
+          {persistInKeychain && touchIdState?.stored && touchIdState.mode === "keychain" ? (
             <Action title="Forget Touch ID Credentials" icon={Icon.Trash} onAction={handleForgetTouchId} />
           ) : null}
         </ActionPanel>
@@ -271,6 +325,8 @@ export function UnlockForm({
       ) : null}
       {touchIdEligible ? (
         <Form.Description text="Unlock with Touch ID from the action panel, or enter your password/PIN. The biometric prompt may dismiss Raycast; reopen Search Passwords after success." />
+      ) : sessionEnabled && sessionState === "empty" ? (
+        <Form.Description text="Enter your master password/PIN to start the extension session. After the session expires, unlock with Touch ID." />
       ) : null}
       {fields.map((field) =>
         field.type === "text" ? (

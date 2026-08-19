@@ -144,6 +144,22 @@ export async function hasStoredCredentials(adapterId: string): Promise<boolean> 
   }
 }
 
+export async function confirmPresence(): Promise<boolean> {
+  if (!helperPath()) {
+    return false;
+  }
+
+  try {
+    return (await invokeHelper({ op: "authenticate" }, RETRIEVE_TIMEOUT_MS)) === true;
+  } catch (error) {
+    if (isCanceledError(error)) {
+      return false;
+    }
+
+    return false;
+  }
+}
+
 export async function unlockWithTouchId(adapterId: string): Promise<Record<string, string> | null> {
   if (!helperPath()) {
     return null;

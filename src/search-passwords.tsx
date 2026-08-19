@@ -20,7 +20,6 @@ import {
   cancelScheduledDispose,
   disposeSession,
   isBiometricUnlockInProgress,
-  parseSessionTimeoutMinutes,
   scheduleDisposeAllSessions,
 } from "./adapters/external-session";
 import { getExternalAdaptersDirectoryForDisplay } from "./registry/load-external-adapters";
@@ -33,6 +32,15 @@ import {
 } from "./registry";
 import type { ItemAvailability, PasswordManagerAdapter, VaultItem } from "./types";
 import { UnlockForm } from "./unlock-form";
+import {
+  getExtensionSessionState,
+  isExtensionSessionEnabled,
+  lockExtensionSession,
+  lockExtensionSessionIfExpired,
+  markSessionActivity,
+  parseSessionTimeoutMinutes,
+  subscribeToExtensionSession,
+} from "./utils/credential-vault";
 import { filterVaultItems } from "./utils/items";
 
 const TOTP_DELAY_MS = 5000;
@@ -494,7 +502,7 @@ export default function SearchPasswords() {
 
   const [sessionManagerId, setSessionManagerId] = useState<string | undefined>(undefined);
   const [unlockedIds, setUnlockedIds] = useState<string[]>([]);
-  const [hasUnlockedThisMount, setHasUnlockedThisMount] = useState(false);
+  const [sessionEpoch, setSessionEpoch] = useState(0);
   const [searchText, setSearchText] = useState("");
   const dropdownChangeCountRef = useRef(0);
   const lastActivityRef = useRef(Date.now());
@@ -532,7 +540,16 @@ export default function SearchPasswords() {
   }, [allAdapters, selectableAdapters, preferences.defaultManagerId, preferences.defaultManagerOverride]);
 
   function markActivity(): void {
+    if (getExtensionSessionState() === "locked") {
+      return;
+    }
+
     lastActivityRef.current = Date.now();
+    markSessionActivity();
+  }
+
+  function bumpSessionEpoch(): void {
+    setSessionEpoch((value) => value + 1);
   }
 
   useEffect(() => {
@@ -541,6 +558,12 @@ export default function SearchPasswords() {
   }, [preferences.defaultManagerId, preferences.defaultManagerOverride, preferredManagerId]);
 
   const activeManagerId = sessionManagerId ?? preferredManagerId;
+
+  useEffect(() => {
+    return subscribeToExtensionSession(() => {
+      setSessionEpoch((value) => value + 1);
+    });
+  }, []);
 
   useEffect(() => {
     cancelScheduledDispose();
@@ -557,7 +580,9 @@ export default function SearchPasswords() {
     const previous = previousManagerIdRef.current;
     if (previous && previous !== activeManagerId) {
       void disposeSession(previous);
-      setUnlockedIds((ids) => ids.filter((id) => id !== previous));
+      if (!isExtensionSessionEnabled()) {
+        setUnlockedIds((ids) => ids.filter((id) => id !== previous));
+      }
     }
 
     previousManagerIdRef.current = activeManagerId;
@@ -569,7 +594,15 @@ export default function SearchPasswords() {
     }
 
     const timeoutMs = parseSessionTimeoutMinutes(preferences.sessionTimeoutMinutes) * 60_000;
-    const handle = setInterval(() => {
+    const tick = (): void => {
+      if (isExtensionSessionEnabled()) {
+        if (lockExtensionSessionIfExpired()) {
+          void disposeSession(activeManagerId);
+          bumpSessionEpoch();
+        }
+        return;
+      }
+
       if (Date.now() - lastActivityRef.current < timeoutMs) {
         return;
       }
@@ -577,15 +610,28 @@ export default function SearchPasswords() {
       lastActivityRef.current = Date.now();
       void disposeSession(activeManagerId);
       setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
-    }, 1000);
+    };
+
+    tick();
+    const handle = setInterval(tick, 1000);
 
     return () => clearInterval(handle);
   }, [activeManagerId, preferences.sessionTimeoutMinutes]);
 
-  const selectedAdapter = selectableAdapters.find((adapter) => adapter.id === activeManagerId);
+  const selectedAdapter =
+    selectableAdapters.find((adapter) => adapter.id === activeManagerId) ??
+    allAdapters.find((adapter) => adapter.id === activeManagerId);
   const selectedStatus = adapterStatuses?.find((entry) => entry.adapter.id === activeManagerId)?.status;
+  const extensionSessionState = getExtensionSessionState();
+  const needsExtensionUnlock =
+    sessionEpoch >= 0 &&
+    isExtensionSessionEnabled() &&
+    Boolean(selectedAdapter?.authenticate) &&
+    (extensionSessionState === "empty" || extensionSessionState === "locked");
   const showUnlockForm = Boolean(
-    selectedAdapter && selectedStatus && adapterNeedsAuth(selectedStatus) && !unlockedIds.includes(selectedAdapter.id),
+    selectedAdapter &&
+    (needsExtensionUnlock ||
+      (selectedStatus && adapterNeedsAuth(selectedStatus) && !unlockedIds.includes(selectedAdapter.id))),
   );
   const isSessionReady = Boolean(
     selectedAdapter && selectedStatus && (selectedStatus.ok || unlockedIds.includes(selectedAdapter.id)),
@@ -674,8 +720,13 @@ export default function SearchPasswords() {
     }
 
     markActivity();
+    if (isExtensionSessionEnabled()) {
+      lockExtensionSession();
+      bumpSessionEpoch();
+    } else {
+      setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
+    }
     await disposeSession(activeManagerId);
-    setUnlockedIds((ids) => ids.filter((id) => id !== activeManagerId));
     void revalidateAdapterStatuses();
   }
 
@@ -732,12 +783,11 @@ export default function SearchPasswords() {
         adapterStatuses={adapterStatuses ?? []}
         activeManagerId={activeManagerId}
         preferredManagerId={preferredManagerId}
-        isReauth={hasUnlockedThisMount}
         onManagerChange={applyManagerSelection}
         onUnlocked={() => {
           markActivity();
-          setHasUnlockedThisMount(true);
           setUnlockedIds((ids) => (ids.includes(selectedAdapter.id) ? ids : [...ids, selectedAdapter.id]));
+          bumpSessionEpoch();
           void revalidateAdapterStatuses();
         }}
         onActivity={markActivity}

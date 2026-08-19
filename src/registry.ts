@@ -3,6 +3,7 @@ import { getPreferenceValues } from "@raycast/api";
 import { adapters as builtinAdapters } from "./adapters";
 import { loadExternalAdapters } from "./registry/load-external-adapters";
 import type { AdapterStatus, CliPathOverrides, PasswordManagerAdapter } from "./types";
+import { wrapAdapterWithAutoUnlock } from "./utils/adapter-auto-unlock";
 import { resolveBinary } from "./utils/cli";
 
 export function adapterNeedsAuth(status: AdapterStatus): boolean {
@@ -31,7 +32,7 @@ export async function loadAdapters(): Promise<PasswordManagerAdapter[]> {
     return true;
   });
 
-  adapterCache = [...builtinAdapters, ...filteredExternal];
+  adapterCache = [...builtinAdapters, ...filteredExternal].map(wrapAdapterWithAutoUnlock);
   return adapterCache;
 }
 

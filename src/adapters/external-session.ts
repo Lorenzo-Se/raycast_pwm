@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { getPreferenceValues } from "@raycast/api";
 
 import type { ExternalAdapterManifest } from "../types";
+import { parseSessionTimeoutMinutes } from "../utils/credential-vault";
 import {
   EXTERNAL_ADAPTER_MAX_BUFFER,
   EXTERNAL_ADAPTER_TIMEOUT_MS,
@@ -13,9 +14,6 @@ import {
 } from "./external-protocol";
 
 const DISPOSE_KILL_GRACE_MS = 500;
-const DEFAULT_SESSION_TIMEOUT_MINUTES = 15;
-const MIN_SESSION_TIMEOUT_MINUTES = 1;
-const MAX_SESSION_TIMEOUT_MINUTES = 1440;
 
 interface PendingRequest {
   resolve: (result: unknown) => void;
@@ -26,15 +24,6 @@ interface PendingRequest {
 const sessions = new Map<string, ExternalAdapterSession>();
 let scheduledDispose: ReturnType<typeof setTimeout> | undefined;
 let biometricUnlockInProgress = false;
-
-export function parseSessionTimeoutMinutes(raw: string | undefined): number {
-  const parsed = Number.parseInt(raw ?? String(DEFAULT_SESSION_TIMEOUT_MINUTES), 10);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_SESSION_TIMEOUT_MINUTES;
-  }
-
-  return Math.min(MAX_SESSION_TIMEOUT_MINUTES, Math.max(MIN_SESSION_TIMEOUT_MINUTES, parsed));
-}
 
 export function getSessionIdleTimeoutMs(): number {
   const preferences = getPreferenceValues<{ sessionTimeoutMinutes?: string }>();

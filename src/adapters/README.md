@@ -161,30 +161,32 @@ Auth (optional):
 
 Session:
 
-- Escape / Fenster schließen beendet den Helfer
-- Preference **Session timeout (minutes)** (Default 15) sperrt nach Inaktivität erneut
-- Action **Lock Session** entsperrt denselben Zustand wie Timeout (Helfer weg, Unlock-Formular)
+- Escape / Fenster schließen beendet den Helfer, **nicht** die Extension-Session (sofern **Enable extension session** an ist)
+- Preference **Enable extension session** (Default an): Master-PW/PIN bleiben im Raycast-Prozess-RAM. Gesperrte Password Manager werden still neu entsperrt, bis die Session abläuft oder Raycast beendet wird
+- Preference **Session timeout (minutes)** (Default 15): nach Inaktivität sperrt die Extension-Session (Touch ID) bzw. ohne Extension-Session den Password Manager
+- Action **Lock Session**: gleicher Zustand wie Timeout (Helfer weg). Mit Extension-Session bleiben Credentials im RAM; Unlock per Touch ID
 
 ### Touch ID (macOS)
 
-Nach dem **ersten** Unlock per Formular kann die Extension Credentials verschlüsselt in der macOS Keychain ablegen und später per Touch ID / Apple Watch / Gerätecode erneut entsperren. Die Logik liegt nur in der Extension (`src/utils/biometric-auth.ts` + Swift-CLI `swift/BiometricAuth/main.swift`). Adapter-Scripts (`adapter.js`) sehen weiterhin nur `authenticate(credentials)`.
+Die Logik liegt nur in der Extension (`src/utils/credential-vault.ts`, `src/utils/biometric-auth.ts` + Swift-CLI `swift/BiometricAuth/main.swift`). Adapter-Scripts (`adapter.js`) sehen weiterhin nur `authenticate(credentials)`.
 
 Flow:
 
 1. User entsperrt mit Master-Passwort oder PIN (`getAuthRequirements` / `authenticate`).
-2. Wenn **Enable Touch ID for re-unlock** an ist: Credential-Map als JSON in der Keychain, Service `raycast-pwm:<adapterId>`, Access Control `userPresence`, `WhenUnlockedThisDeviceOnly` (dieses Gerät, kein iCloud-Sync).
-3. Timeout oder **Lock Session**: Helfer wird beendet, Keychain-Eintrag bleibt.
-4. Re-Auth: Keychain-Lesen löst den biometrischen Prompt aus → `adapter.authenticate` mit den gelesenen Feldern.
-5. Escape ohne laufenden Biometrie-Prompt: Helfer stirbt, Keychain bleibt. Ob Touch ID beim nächsten Öffnen angeboten wird, steuert **Touch ID only after timeout** (dann erst nach Timeout/Lock in derselben Sitzung, nicht direkt nach Escape).
-6. **Forget Touch ID credentials** löscht den Keychain-Eintrag. Pref aus: beim nächsten Formular-Unlock wird der Eintrag ebenfalls entfernt.
+2. Wenn **Enable extension session** an ist: Credential-Map im Prozess-RAM (`src/utils/credential-vault.ts`). Password Manager, die sich selbst sperren, werden still mit diesen Credentials neu entsperrt.
+3. Timeout oder **Lock Session**: Helfer wird beendet, RAM bleibt. Re-Auth ist Touch ID / Apple Watch / Gerätecode über `LocalAuthentication` (kein Keychain-Read). Danach wieder stilles PWM-Unlock.
+4. Raycast komplett beenden: RAM ist weg. Nächster Start verlangt wieder Master-PW/PIN — außer **Remember in Keychain** ist an.
+5. Wenn **Remember in Keychain** an ist: Credential-Map als JSON in der Keychain, Service `raycast-pwm:<adapterId>`, `WhenUnlockedThisDeviceOnly` (dieses Gerät, kein iCloud-Sync). Nach einem Raycast-Neustart entsperrt Touch ID aus der Keychain und füllt das RAM wieder.
+6. Escape ohne laufenden Biometrie-Prompt: Helfer stirbt, Extension-Session bleibt aktiv bis Timeout oder Raycast-Quit.
+7. **Forget Touch ID credentials** löscht den Keychain-Eintrag. Pref aus: beim nächsten Formular-Unlock wird der Eintrag ebenfalls entfernt.
 
 Limits:
 
-- macOS only; ohne Biometrie/Gerätecode fällt die UI auf das Formular zurück.
+- macOS only; ohne Biometrie/Gerätecode fällt die UI auf das Formular zurück (Windows: nach Timeout immer Formular).
 - Der System-Prompt kann das Raycast-Fenster schließen. Währenddessen hält die Extension den Helfer (`biometricUnlockInProgress`). Nach Erfolg Search Passwords ggf. erneut öffnen.
-- **Raycast Store:** Extensions mit Keychain-Zugriff werden abgelehnt. Touch ID ist für lokale / Dev-Builds gedacht.
+- **Raycast Store:** Extensions mit Keychain-Zugriff werden abgelehnt. Touch ID / Keychain ist für lokale / Dev-Builds gedacht.
 - Build kompiliert den Helfer mit **swiftc** (Command Line Tools reichen; `npm run build-biometric`). Ohne `swiftc` fällt Touch ID still auf das Formular zurück.
-- Der unsignierte Helfer kann Keychain-Items **nicht** mit Biometrie-ACL speichern (`errSecMissingEntitlement` / -34018). Speichern nutzt `WhenUnlockedThisDeviceOnly`; Touch ID/Watch/Passcode werden beim **Lesen** per `LocalAuthentication` verlangt.
+- Der unsignierte Helfer kann Keychain-Items **nicht** mit Biometrie-ACL speichern (`errSecMissingEntitlement` / -34018). Speichern nutzt `WhenUnlockedThisDeviceOnly`; Touch ID/Watch/Passcode werden beim **Lesen** bzw. bei Presence-Checks per `LocalAuthentication` verlangt.
 
 Vollständige Protokollreferenz: Abschnitt **Externe Adapter** in dieser Datei; Beispiele unter `examples/external-adapter/`.
 

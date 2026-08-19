@@ -44,6 +44,9 @@ private func run() throws {
   case "retrieve":
     let secret = try retrieveCredential(service: require(request, "service"), account: require(request, "account"))
     emit(ok: true, result: secret, error: nil)
+  case "authenticate":
+    try authenticateDeviceOwner()
+    emit(ok: true, result: true, error: nil)
   case "delete":
     try removeCredential(service: require(request, "service"), account: require(request, "account"))
     emit(ok: true, result: true, error: nil)

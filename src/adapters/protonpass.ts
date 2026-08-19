@@ -279,6 +279,10 @@ export const protonPassAdapter: PasswordManagerAdapter = {
     try {
       await unlockPassCliSession(binary, pin);
     } catch (error) {
+      if (!(await isPassCliSessionLocked(binary))) {
+        return { ok: true };
+      }
+
       const message = error instanceof CliError ? error.message : String(error);
       if (message === "PIN falsch." || isWrongPinError(message)) {
         return { ok: false, reason: "PIN falsch.", needsAuth: true };
